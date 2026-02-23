@@ -48,17 +48,25 @@ function extractVideoId(url: string): string | null {
 
 /**
  * Follow short URL redirects to get the final URL and video ID.
- * Uses manual redirect following to avoid loading blocked pages.
+ * Uses manual redirect following to extract video ID as early as possible.
  */
 async function resolveShortUrl(shortUrl: string): Promise<{ finalUrl: string; videoId: string | null }> {
+    // Quick check: if the URL already contains a video ID, return immediately
+    const directId = extractVideoId(shortUrl);
+    if (directId) {
+        console.log('[Redirect] Video ID found directly in input URL:', directId);
+        return { finalUrl: shortUrl, videoId: directId };
+    }
+
     let currentUrl = shortUrl;
 
-    // Try up to 5 redirects
-    for (let i = 0; i < 5; i++) {
+    // Manually follow redirects, checking for video ID at each step
+    for (let i = 0; i < 10; i++) {
         try {
             const resp = await axios.get(currentUrl, {
                 maxRedirects: 0,
-                validateStatus: (s) => s >= 200 && s < 400,
+                // Only accept 2xx — 3xx will throw so we can handle Location manually
+                validateStatus: (s) => s >= 200 && s < 300,
                 headers: {
                     'User-Agent': MOBILE_UA,
                     'Accept': 'text/html,application/xhtml+xml',
@@ -66,38 +74,52 @@ async function resolveShortUrl(shortUrl: string): Promise<{ finalUrl: string; vi
                 timeout: 10000,
             });
 
-            // No redirect, we're at the final URL
+            // 2xx — final destination reached
+            console.log('[Redirect] Reached final URL (2xx):', currentUrl);
             const videoId = extractVideoId(currentUrl);
-            return { finalUrl: currentUrl, videoId };
+            if (videoId) return { finalUrl: currentUrl, videoId };
+
+            // Also try response URL
+            const respUrl = resp.request?.res?.responseUrl || resp.request?.responseURL;
+            if (respUrl) {
+                const idFromResp = extractVideoId(respUrl);
+                if (idFromResp) return { finalUrl: respUrl, videoId: idFromResp };
+            }
+            return { finalUrl: currentUrl, videoId: null };
         } catch (err: any) {
-            if (err.response && [301, 302, 303, 307, 308].includes(err.response.status)) {
+            const status = err.response?.status;
+            if (status && status >= 300 && status < 400) {
                 const location = err.response.headers['location'];
                 if (location) {
-                    currentUrl = location.startsWith('http') ? location : new URL(location, currentUrl).href;
-                    const videoId = extractVideoId(currentUrl);
+                    const nextUrl = location.startsWith('http') ? location : new URL(location, currentUrl).href;
+                    console.log(`[Redirect] ${status} -> ${nextUrl}`);
+                    const videoId = extractVideoId(nextUrl);
                     if (videoId) {
-                        return { finalUrl: currentUrl, videoId };
+                        return { finalUrl: nextUrl, videoId };
                     }
+                    currentUrl = nextUrl;
                     continue;
                 }
             }
-            // If not a redirect error, try axios with auto-redirect as fallback
+            console.log('[Redirect] Manual following error:', err.message);
             break;
         }
     }
 
-    // Fallback: let axios follow all redirects
+    // Fallback: let axios follow all redirects automatically
+    console.log('[Redirect] Falling back to auto-redirect...');
     try {
         const resp = await axios.get(shortUrl, {
-            maxRedirects: 5,
+            maxRedirects: 10,
             headers: { 'User-Agent': MOBILE_UA },
-            timeout: 10000,
+            timeout: 15000,
         });
         const finalUrl = resp.request?.res?.responseUrl || resp.request?.responseURL || shortUrl;
+        console.log('[Redirect] Auto-redirect final URL:', finalUrl);
         return { finalUrl, videoId: extractVideoId(finalUrl) };
     } catch (err: any) {
-        // Even if it errors, check if we got a responseUrl
-        const finalUrl = err.request?.res?.responseUrl || shortUrl;
+        const finalUrl = err.request?.res?.responseUrl || err.response?.headers?.['location'] || shortUrl;
+        console.log('[Redirect] Auto-redirect failed, last URL:', finalUrl);
         return { finalUrl, videoId: extractVideoId(finalUrl) };
     }
 }
