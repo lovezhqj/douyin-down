@@ -24,8 +24,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [history, setHistory] = useState<VideoData[]>([]);
-  const [videoLoading, setVideoLoading] = useState(false);
-  const [videoProgress, setVideoProgress] = useState(0);
+  const [videoLoading, setVideoLoading] = useState(true);
 
   useEffect(() => {
     const saved = localStorage.getItem('douyin_history');
@@ -189,31 +188,18 @@ export default function App() {
                       controls
                       className="w-full h-full object-contain"
                       poster={videoData.cover}
-                      onLoadStart={() => { setVideoLoading(true); setVideoProgress(0); }}
-                      onProgress={(e) => {
-                        const video = e.currentTarget;
-                        if (video.buffered.length > 0 && video.duration) {
-                          const percent = Math.round((video.buffered.end(video.buffered.length - 1) / video.duration) * 100);
-                          setVideoProgress(percent);
-                        }
-                      }}
-                      onCanPlayThrough={() => { setVideoLoading(false); setVideoProgress(100); }}
+                      onLoadStart={() => setVideoLoading(true)}
+                      onCanPlay={() => setVideoLoading(false)}
                       onWaiting={() => setVideoLoading(true)}
                       onPlaying={() => setVideoLoading(false)}
                     />
                     {videoLoading && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none">
-                        <div className="w-3/4 max-w-xs">
-                          <div className="h-1.5 bg-white/20 rounded-full overflow-hidden mb-2">
-                            <div
-                              className="h-full bg-gradient-to-r from-indigo-400 to-pink-400 rounded-full transition-all duration-300"
-                              style={{ width: `${videoProgress}%` }}
-                            />
-                          </div>
-                          <p className="text-white/80 text-xs text-center">
-                            视频加载中 {videoProgress > 0 ? `${videoProgress}%` : '...'}
-                          </p>
-                        </div>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 pointer-events-none">
+                        <svg className="animate-spin h-10 w-10 text-white mb-3" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        <p className="text-white/90 text-sm font-medium">视频加载中...</p>
                       </div>
                     )}
                   </div>
