@@ -15,7 +15,10 @@ interface VideoData {
 }
 
 export default function App() {
-  const [inputUrl, setInputUrl] = useState('');
+  const [inputUrl, setInputUrl] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('shortUrl') || '';
+  });
   const [loading, setLoading] = useState(false);
   const [videoData, setVideoData] = useState<VideoData | null>(null);
   const [error, setError] = useState<string | null>(null);
