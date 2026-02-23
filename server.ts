@@ -2,14 +2,146 @@ import express from 'express';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// ============================================================
+// Constants & Helpers
+// ============================================================
+const DESKTOP_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 const MOBILE_UA =
     'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';
 
+/** Generate a random msToken-like string */
+function generateMsToken(length = 107): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    let result = '';
+    const bytes = crypto.randomBytes(length);
+    for (let i = 0; i < length; i++) {
+        result += chars[bytes[i] % chars.length];
+    }
+    return result;
+}
+
+/** Generate a random ttwid-like string */
+function generateTtwid(): string {
+    return crypto.randomBytes(48).toString('base64url');
+}
+
+/** Extract video ID (aweme_id) from any Douyin URL */
+function extractVideoId(url: string): string | null {
+    // Pattern: /video/7123456789
+    const videoMatch = url.match(/\/video\/(\d+)/);
+    if (videoMatch) return videoMatch[1];
+
+    // Pattern: /note/7123456789 (图文也可能有视频)
+    const noteMatch = url.match(/\/note\/(\d+)/);
+    if (noteMatch) return noteMatch[1];
+
+    // Pattern: modal_id=7123456789
+    const modalMatch = url.match(/modal_id=(\d+)/);
+    if (modalMatch) return modalMatch[1];
+
+    return null;
+}
+
+/**
+ * Follow short URL redirects to get the final URL and video ID.
+ * Uses manual redirect following to avoid loading blocked pages.
+ */
+async function resolveShortUrl(shortUrl: string): Promise<{ finalUrl: string; videoId: string | null }> {
+    let currentUrl = shortUrl;
+
+    // Try up to 5 redirects
+    for (let i = 0; i < 5; i++) {
+        try {
+            const resp = await axios.get(currentUrl, {
+                maxRedirects: 0,
+                validateStatus: (s) => s >= 200 && s < 400,
+                headers: {
+                    'User-Agent': MOBILE_UA,
+                    'Accept': 'text/html,application/xhtml+xml',
+                },
+                timeout: 10000,
+            });
+
+            // No redirect, we're at the final URL
+            const videoId = extractVideoId(currentUrl);
+            return { finalUrl: currentUrl, videoId };
+        } catch (err: any) {
+            if (err.response && [301, 302, 303, 307, 308].includes(err.response.status)) {
+                const location = err.response.headers['location'];
+                if (location) {
+                    currentUrl = location.startsWith('http') ? location : new URL(location, currentUrl).href;
+                    const videoId = extractVideoId(currentUrl);
+                    if (videoId) {
+                        return { finalUrl: currentUrl, videoId };
+                    }
+                    continue;
+                }
+            }
+            // If not a redirect error, try axios with auto-redirect as fallback
+            break;
+        }
+    }
+
+    // Fallback: let axios follow all redirects
+    try {
+        const resp = await axios.get(shortUrl, {
+            maxRedirects: 5,
+            headers: { 'User-Agent': MOBILE_UA },
+            timeout: 10000,
+        });
+        const finalUrl = resp.request?.res?.responseUrl || resp.request?.responseURL || shortUrl;
+        return { finalUrl, videoId: extractVideoId(finalUrl) };
+    } catch (err: any) {
+        // Even if it errors, check if we got a responseUrl
+        const finalUrl = err.request?.res?.responseUrl || shortUrl;
+        return { finalUrl, videoId: extractVideoId(finalUrl) };
+    }
+}
+
+/** Deep search an object for video info */
+function findVideoInObject(obj: any): { videoSrc: string; coverSrc: string; desc: string } | null {
+    if (!obj || typeof obj !== 'object') return null;
+
+    // Check for playApi (newer format)
+    if (obj.video && obj.video.playApi) {
+        const videoSrc = obj.video.playApi.startsWith('http')
+            ? obj.video.playApi
+            : 'https:' + obj.video.playApi;
+        const coverSrc = obj.video?.cover?.urlList?.[0] || obj.video?.dynamicCover?.urlList?.[0] || '';
+        return { videoSrc, coverSrc, desc: obj.desc || '' };
+    }
+
+    // Check for play_addr (older format)
+    if (obj.video && obj.video.play_addr && obj.video.play_addr.url_list?.length > 0) {
+        let videoSrc = obj.video.play_addr.url_list[0];
+        videoSrc = videoSrc.replace('playwm', 'play');
+        const coverSrc = obj.video?.cover?.url_list?.[0] || '';
+        return { videoSrc, coverSrc, desc: obj.desc || '' };
+    }
+
+    // Check for download_addr
+    if (obj.video && obj.video.download_addr && obj.video.download_addr.url_list?.length > 0) {
+        const videoSrc = obj.video.download_addr.url_list[0];
+        const coverSrc = obj.video?.cover?.url_list?.[0] || '';
+        return { videoSrc, coverSrc, desc: obj.desc || '' };
+    }
+
+    // Recurse into children
+    for (const key of Object.keys(obj)) {
+        const result = findVideoInObject(obj[key]);
+        if (result && result.videoSrc) return result;
+    }
+
+    return null;
+}
+
+// ============================================================
+// Express App
+// ============================================================
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
@@ -32,148 +164,246 @@ app.post('/api/parse', async (req, res) => {
             targetUrl = urlMatch[0];
         }
 
-        console.log('Processing URL:', targetUrl);
+        console.log('[Parse] Input URL:', targetUrl);
 
-        // Follow redirects to resolve short links (v.douyin.com)
-        const response = await axios.get(targetUrl, {
-            maxRedirects: 5,
-            headers: { 'User-Agent': MOBILE_UA },
-        });
+        // Step 1: Resolve short URL to get video ID
+        const { finalUrl, videoId } = await resolveShortUrl(targetUrl);
+        console.log('[Parse] Final URL:', finalUrl, '| Video ID:', videoId);
 
-        const finalUrl =
-            response.request?.res?.responseUrl ||
-            response.request?.responseURL ||
-            targetUrl;
-        console.log('Final URL:', finalUrl);
-
-        // Extract Video ID from final URL
-        const videoIdMatch = finalUrl.match(/\/video\/(\d+)/);
-        const videoId = videoIdMatch ? videoIdMatch[1] : null;
-
-        const html = response.data;
-        const $ = cheerio.load(html);
+        if (!videoId) {
+            return res.status(400).json({ error: '无法从链接中提取视频ID，请检查链接格式' });
+        }
 
         let videoSrc = '';
         let coverSrc = '';
         let desc = '';
 
-        // ------ Strategy 1: Parse RENDER_DATA script tag ------
-        const renderDataScript = $('#RENDER_DATA');
-        if (renderDataScript.length > 0) {
-            try {
-                const decoded = decodeURIComponent(renderDataScript.html() || '');
-                const renderData = JSON.parse(decoded);
+        // ------ Strategy 1: Douyin Web API with msToken ------
+        console.log('[Parse] Strategy 1: Douyin Web API...');
+        try {
+            const msToken = generateMsToken();
+            const ttwid = generateTtwid();
+            const apiUrl = `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${videoId}&aid=6383&cookie_enabled=true&platform=PC&downlink=10`;
 
-                const findVideoInfo = (obj: any): void => {
-                    if (!obj || typeof obj !== 'object') return;
-                    if (obj.video && obj.video.playApi) {
-                        videoSrc = 'https:' + obj.video.playApi;
-                        desc = obj.desc || desc;
-                        if (obj.video.cover && obj.video.cover.urlList) {
-                            coverSrc = obj.video.cover.urlList[0] || '';
-                        }
-                        return;
+            const apiRes = await axios.get(apiUrl, {
+                headers: {
+                    'User-Agent': DESKTOP_UA,
+                    'Referer': 'https://www.douyin.com/',
+                    'Cookie': `msToken=${msToken}; ttwid=${ttwid}; odin_tt=324fb4ea4a89c0c05827e18a1ed9cf9bf8a17f7705fcc793fec935b637867e2a5a9b8168c885554d029919117a18ba69; passport_csrf_token=3571e3e6a307e1c3b29a6de5dd205e69`,
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                },
+                timeout: 15000,
+            });
+
+            const detail = apiRes.data?.aweme_detail;
+            if (detail) {
+                const result = findVideoInObject(detail);
+                if (result && result.videoSrc) {
+                    videoSrc = result.videoSrc;
+                    coverSrc = result.coverSrc;
+                    desc = result.desc;
+                    console.log('[Parse] Strategy 1 SUCCESS');
+                }
+            }
+        } catch (e: any) {
+            console.log('[Parse] Strategy 1 failed:', e.message);
+        }
+
+        // ------ Strategy 2: Fetch page with Desktop UA + parse RENDER_DATA ------
+        if (!videoSrc) {
+            console.log('[Parse] Strategy 2: Desktop page RENDER_DATA...');
+            try {
+                const pageUrl = `https://www.douyin.com/video/${videoId}`;
+                const msToken = generateMsToken();
+                const ttwid = generateTtwid();
+
+                const pageRes = await axios.get(pageUrl, {
+                    headers: {
+                        'User-Agent': DESKTOP_UA,
+                        'Referer': 'https://www.douyin.com/',
+                        'Cookie': `msToken=${msToken}; ttwid=${ttwid}`,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'zh-CN,zh;q=0.9',
+                    },
+                    maxRedirects: 5,
+                    timeout: 15000,
+                });
+
+                const html = pageRes.data;
+                const $ = cheerio.load(html);
+
+                // Try RENDER_DATA
+                const renderDataEl = $('#RENDER_DATA');
+                if (renderDataEl.length > 0) {
+                    const decoded = decodeURIComponent(renderDataEl.html() || '');
+                    const renderData = JSON.parse(decoded);
+                    const result = findVideoInObject(renderData);
+                    if (result && result.videoSrc) {
+                        videoSrc = result.videoSrc;
+                        coverSrc = result.coverSrc;
+                        desc = result.desc;
+                        console.log('[Parse] Strategy 2 (RENDER_DATA) SUCCESS');
                     }
-                    if (obj.video && obj.video.play_addr && obj.video.play_addr.url_list) {
-                        videoSrc = obj.video.play_addr.url_list[0] || '';
-                        videoSrc = videoSrc.replace('playwm', 'play');
-                        desc = obj.desc || desc;
-                        if (obj.video.cover && obj.video.cover.url_list) {
-                            coverSrc = obj.video.cover.url_list[0] || '';
-                        }
-                        return;
-                    }
-                    for (const key of Object.keys(obj)) {
-                        findVideoInfo(obj[key]);
+                }
+
+                // Try _ROUTER_DATA or SSR_HYDRATED_DATA
+                if (!videoSrc) {
+                    $('script').each((_i, el) => {
                         if (videoSrc) return;
-                    }
-                };
-                findVideoInfo(renderData);
-            } catch (e) {
-                console.error('Error parsing RENDER_DATA', e);
+                        const content = $(el).html() || '';
+
+                        // Try various JSON data patterns
+                        for (const pattern of [
+                            /window\._ROUTER_DATA\s*=\s*(\{.+\})\s*;?\s*$/ms,
+                            /self\.__next_f\.push\(\[.*?"(\{.*?\})"\]/s,
+                        ]) {
+                            const match = content.match(pattern);
+                            if (match) {
+                                try {
+                                    const data = JSON.parse(match[1]);
+                                    const result = findVideoInObject(data);
+                                    if (result && result.videoSrc) {
+                                        videoSrc = result.videoSrc;
+                                        coverSrc = result.coverSrc;
+                                        desc = result.desc;
+                                        console.log('[Parse] Strategy 2 (router data) SUCCESS');
+                                        return;
+                                    }
+                                } catch { }
+                            }
+                        }
+                    });
+                }
+            } catch (e: any) {
+                console.log('[Parse] Strategy 2 failed:', e.message);
             }
         }
 
-        // ------ Strategy 2: Search script tags for playAddr ------
+        // ------ Strategy 3: Mobile page scraping ------
         if (!videoSrc) {
-            $('script').each((_i, el) => {
-                const content = $(el).html() || '';
-                if (content.includes('playAddr')) {
-                    const matches = content.match(/"playAddr":\s*(\[\{.*?\}\])/);
-                    if (matches && matches[1]) {
-                        try {
-                            const json = JSON.parse(matches[1]);
-                            const src = json[0]?.src;
-                            if (src) {
-                                videoSrc = src.startsWith('//') ? 'https:' + src : src;
+            console.log('[Parse] Strategy 3: Mobile page scraping...');
+            try {
+                const mobileUrl = `https://m.douyin.com/share/video/${videoId}`;
+                const pageRes = await axios.get(mobileUrl, {
+                    headers: {
+                        'User-Agent': MOBILE_UA,
+                        'Accept': 'text/html,application/xhtml+xml',
+                    },
+                    maxRedirects: 5,
+                    timeout: 15000,
+                });
+
+                const html = pageRes.data;
+                const $ = cheerio.load(html);
+
+                // Search all script tags for video data
+                $('script').each((_i, el) => {
+                    if (videoSrc) return;
+                    const content = $(el).html() || '';
+
+                    // Look for playAddr patterns
+                    if (content.includes('playAddr') || content.includes('play_addr') || content.includes('playApi')) {
+                        // Try to extract any video URL
+                        const patterns = [
+                            /"playApi"\s*:\s*"([^"]+)"/,
+                            /"play_addr".*?"url_list"\s*:\s*\["([^"]+)"/,
+                            /"playAddr"\s*:\s*\[\{"src"\s*:\s*"([^"]+)"/,
+                        ];
+                        for (const p of patterns) {
+                            const m = content.match(p);
+                            if (m && m[1]) {
+                                let src = m[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
+                                videoSrc = src.startsWith('//') ? 'https:' + src : src.startsWith('http') ? src : 'https:' + src;
                                 videoSrc = videoSrc.replace('playwm', 'play');
+                                console.log('[Parse] Strategy 3 SUCCESS');
+                                break;
                             }
-                        } catch (e) {
-                            console.error('Error parsing playAddr JSON', e);
                         }
                     }
+                });
+
+                // Generic mp4 search
+                if (!videoSrc) {
+                    const mp4Match = html.match(/https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*/);
+                    if (mp4Match) {
+                        videoSrc = mp4Match[0];
+                        console.log('[Parse] Strategy 3 (mp4 regex) SUCCESS');
+                    }
                 }
-            });
+            } catch (e: any) {
+                console.log('[Parse] Strategy 3 failed:', e.message);
+            }
         }
 
-        // ------ Strategy 3: Old API fallback ------
-        if (!videoSrc && videoId) {
+        // ------ Strategy 4: iesdouyin API ------
+        if (!videoSrc) {
+            console.log('[Parse] Strategy 4: iesdouyin API...');
             try {
                 const apiRes = await axios.get(
                     `https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids=${videoId}`,
                     {
-                        headers: {
-                            'User-Agent':
-                                'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
-                        },
+                        headers: { 'User-Agent': MOBILE_UA },
+                        timeout: 10000,
                     }
                 );
-                const itemList = apiRes.data.item_list;
+                const itemList = apiRes.data?.item_list;
                 if (itemList && itemList.length > 0) {
                     const item = itemList[0];
-                    videoSrc = item.video.play_addr.url_list[0];
-                    videoSrc = videoSrc.replace('playwm', 'play');
-                    coverSrc = item.video.cover.url_list[0];
-                    desc = item.desc;
+                    if (item.video?.play_addr?.url_list?.[0]) {
+                        videoSrc = item.video.play_addr.url_list[0].replace('playwm', 'play');
+                        coverSrc = item.video?.cover?.url_list?.[0] || '';
+                        desc = item.desc || '';
+                        console.log('[Parse] Strategy 4 SUCCESS');
+                    }
                 }
-            } catch (e) {
-                console.error('API fallback failed', e);
+            } catch (e: any) {
+                console.log('[Parse] Strategy 4 failed:', e.message);
             }
         }
 
-        // ------ Strategy 4: Generic mp4 regex ------
+        // ------ Strategy 5: Construct direct CDN URL ------
         if (!videoSrc) {
-            const mp4Match = html.match(/https?:\/\/[^"']+\.mp4/);
-            if (mp4Match) {
-                videoSrc = mp4Match[0];
+            console.log('[Parse] Strategy 5: Direct CDN construction...');
+            try {
+                // Some Douyin videos can be accessed via a constructed URL
+                const cdnUrl = `https://aweme.snssdk.com/aweme/v1/play/?video_id=${videoId}&ratio=720p&line=0`;
+                const headRes = await axios.head(cdnUrl, {
+                    headers: { 'User-Agent': MOBILE_UA },
+                    maxRedirects: 3,
+                    timeout: 10000,
+                });
+                if (headRes.status === 200) {
+                    videoSrc = cdnUrl;
+                    console.log('[Parse] Strategy 5 SUCCESS');
+                }
+            } catch (e: any) {
+                console.log('[Parse] Strategy 5 failed:', e.message);
             }
         }
 
-        // If all strategies fail, return a demo video
+        // If all strategies fail
         if (!videoSrc) {
-            console.log('Parsing failed, returning demo data for UI verification.');
+            console.log('[Parse] All strategies failed for video ID:', videoId);
             return res.json({
-                success: true,
-                data: {
-                    url: 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4',
-                    cover: 'https://picsum.photos/seed/douyin/400/600',
-                    desc: '解析失败（服务器 IP 可能被限制）。展示示例视频供预览。',
-                    isDemo: true,
-                },
+                success: false,
+                error: '解析失败，所有策略均无法获取视频地址。可能原因：1) 视频已删除 2) 服务器IP被限制 3) 链接格式不支持',
             });
         }
+
+        console.log('[Parse] Final video URL:', videoSrc.substring(0, 100) + '...');
 
         res.json({
             success: true,
             data: {
                 url: videoSrc,
                 cover: coverSrc,
-                desc: desc,
+                desc: desc || '抖音视频',
             },
         });
-    } catch (error) {
-        console.error('Parse error:', error);
-        res.status(500).json({ error: '解析视频失败，请检查链接是否正确' });
+    } catch (error: any) {
+        console.error('[Parse] Unhandled error:', error.message);
+        res.status(500).json({ error: '解析视频失败：' + (error.message || '未知错误') });
     }
 });
 
@@ -192,9 +422,10 @@ app.get('/api/proxy', async (req, res) => {
             responseType: 'stream',
             headers: {
                 'User-Agent': MOBILE_UA,
-                Referer: 'https://www.douyin.com/',
+                'Referer': 'https://www.douyin.com/',
             },
-            timeout: 60000,
+            timeout: 120000,
+            maxRedirects: 5,
         });
 
         // Forward content headers
@@ -202,18 +433,15 @@ app.get('/api/proxy', async (req, res) => {
         const contentLength = response.headers['content-length'];
 
         res.setHeader('Content-Type', contentType);
-        res.setHeader(
-            'Content-Disposition',
-            'attachment; filename="douyin_video.mp4"'
-        );
+        res.setHeader('Content-Disposition', 'attachment; filename="douyin_video.mp4"');
         if (contentLength) {
             res.setHeader('Content-Length', contentLength);
         }
 
         // Pipe the video stream to the client
         response.data.pipe(res);
-    } catch (error) {
-        console.error('Proxy error:', error);
+    } catch (error: any) {
+        console.error('[Proxy] Error:', error.message);
         res.status(500).json({ error: '视频下载失败，请稍后重试' });
     }
 });
@@ -222,16 +450,12 @@ app.get('/api/proxy', async (req, res) => {
 // Serve frontend
 // ============================================================
 if (process.env.NODE_ENV === 'production') {
-    // Production: serve static files from dist/
-    // Use process.cwd() instead of __dirname because compiled server.js
-    // runs from dist-server/ but dist/ is at project root
     const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
     });
 } else {
-    // Development: use Vite dev server as middleware
     const startVite = async () => {
         const { createServer } = await import('vite');
         const vite = await createServer({
