@@ -415,7 +415,7 @@ app.post('/api/parse', async (req, res) => {
 // API: GET /api/proxy — 流式代理视频下载（无大小限制）
 // ============================================================
 app.get('/api/proxy', async (req, res) => {
-    const { url } = req.query;
+    const { url, download } = req.query;
     if (!url || typeof url !== 'string') {
         return res.status(400).json({ error: 'URL parameter is required' });
     }
@@ -436,7 +436,9 @@ app.get('/api/proxy', async (req, res) => {
         const contentType = response.headers['content-type'] || 'video/mp4';
         const contentLength = response.headers['content-length'];
         res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Disposition', 'attachment; filename="douyin_video.mp4"');
+        if (download === '1') {
+            res.setHeader('Content-Disposition', 'attachment; filename="douyin_video.mp4"');
+        }
         if (contentLength) {
             res.setHeader('Content-Length', contentLength);
         }
