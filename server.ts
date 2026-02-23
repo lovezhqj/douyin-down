@@ -223,7 +223,9 @@ app.get('/api/proxy', async (req, res) => {
 // ============================================================
 if (process.env.NODE_ENV === 'production') {
     // Production: serve static files from dist/
-    const distPath = path.resolve(__dirname, 'dist');
+    // Use process.cwd() instead of __dirname because compiled server.js
+    // runs from dist-server/ but dist/ is at project root
+    const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
