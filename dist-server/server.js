@@ -38,6 +38,21 @@ function extractVideoId(url) {
         return modalMatch[1];
     return null;
 }
+/** Inaccessible Chinese CDN domains → accessible alternatives */
+const DOMAIN_REPLACEMENTS = [
+    [/aweme\.snssdk\.com/g, 'www.douyin.com'],
+    [/api-h2\.amemv\.com/g, 'www.douyin.com'],
+    [/api\.amemv\.com/g, 'www.douyin.com'],
+    [/v\d+-[a-z]+\.douyinvod\.com/g, 'www.douyin.com'],
+];
+/** Replace inaccessible CDN domains with accessible alternatives */
+function normalizeVideoUrl(url) {
+    let normalized = url;
+    for (const [pattern, replacement] of DOMAIN_REPLACEMENTS) {
+        normalized = normalized.replace(pattern, replacement);
+    }
+    return normalized;
+}
 /**
  * Follow short URL redirects to get the final URL and video ID.
  * Uses manual redirect following to extract video ID as early as possible.
@@ -356,7 +371,7 @@ app.post('/api/parse', async (req, res) => {
             console.log('[Parse] Strategy 5: Direct CDN construction...');
             try {
                 // Some Douyin videos can be accessed via a constructed URL
-                const cdnUrl = `https://aweme.snssdk.com/aweme/v1/play/?video_id=${videoId}&ratio=720p&line=0`;
+                const cdnUrl = `https://www.douyin.com/aweme/v1/play/?video_id=${videoId}&ratio=720p&line=0`;
                 const headRes = await axios.head(cdnUrl, {
                     headers: { 'User-Agent': MOBILE_UA },
                     maxRedirects: 3,
@@ -379,7 +394,9 @@ app.post('/api/parse', async (req, res) => {
                 error: '解析失败，所有策略均无法获取视频地址。可能原因：1) 视频已删除 2) 服务器IP被限制 3) 链接格式不支持',
             });
         }
-        console.log('[Parse] Final video URL:', videoSrc.substring(0, 100) + '...');
+        // Normalize domains for accessibility from overseas servers
+        videoSrc = normalizeVideoUrl(videoSrc);
+        console.log('[Parse] Final video URL (normalized):', videoSrc.substring(0, 120) + '...');
         res.json({
             success: true,
             data: {
@@ -402,15 +419,18 @@ app.get('/api/proxy', async (req, res) => {
     if (!url || typeof url !== 'string') {
         return res.status(400).json({ error: 'URL parameter is required' });
     }
+    // Normalize the URL to use accessible domains
+    const normalizedUrl = normalizeVideoUrl(url);
+    console.log('[Proxy] Downloading:', normalizedUrl.substring(0, 120));
     try {
-        const response = await axios.get(url, {
+        const response = await axios.get(normalizedUrl, {
             responseType: 'stream',
             headers: {
                 'User-Agent': MOBILE_UA,
                 'Referer': 'https://www.douyin.com/',
             },
             timeout: 120000,
-            maxRedirects: 5,
+            maxRedirects: 10,
         });
         // Forward content headers
         const contentType = response.headers['content-type'] || 'video/mp4';
