@@ -139,8 +139,16 @@ export default function App() {
                   value={inputUrl}
                   onChange={(e) => setInputUrl(e.target.value)}
                   placeholder="请粘贴抖音分享链接..."
-                  className="w-full h-24 bg-slate-50 rounded-xl p-3 text-sm resize-none outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all text-slate-700 placeholder:text-slate-400"
+                  className="w-full h-24 bg-slate-50 rounded-xl p-3 pr-16 text-sm resize-none outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all text-slate-700 placeholder:text-slate-400"
                 />
+                {inputUrl && (
+                  <button
+                    onClick={() => { setInputUrl(''); setVideoData(null); setError(null); }}
+                    className="absolute top-2.5 right-3 w-5 h-5 rounded-full bg-slate-300 hover:bg-slate-400 text-white flex items-center justify-center transition-colors"
+                  >
+                    <span className="text-xs leading-none">×</span>
+                  </button>
+                )}
                 <button
                   onClick={handlePaste}
                   className="absolute bottom-3 right-3 text-xs bg-white px-2 py-1 rounded-md shadow-sm border border-slate-200 text-indigo-600 font-medium active:scale-95 transition-transform"
@@ -246,7 +254,7 @@ export default function App() {
             {/* Guide Section */}
             <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
               <h3 className="font-bold text-slate-900 mb-4 text-sm">使用教程</h3>
-              <div className="space-y-4">
+              <div className="space-y-2">
                 {[
                   { step: 1, text: '打开抖音，找到视频' },
                   { step: 2, text: '点击分享，复制链接' },
