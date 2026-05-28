@@ -1,4 +1,4 @@
-app = 'douyin-downloader'
+app = 'douyin-down'
 primary_region = 'hkg'
 
 [build]
