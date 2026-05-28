@@ -751,41 +751,71 @@ app.post('/api/webhook/runninghub', async (req, res) => {
         console.log('[Webhook] Received callback:', JSON.stringify(body).substring(0, 500));
 
         // Extract taskId from the callback payload
-        // RunningHub may send in different formats, handle flexibly
         const taskId = body.taskId || body.data?.taskId || body.task_id;
         if (!taskId) {
             console.error('[Webhook] No taskId found in callback body');
             return res.status(400).json({ error: 'taskId is required' });
         }
 
+        // Parse eventData if it's a JSON string (RunningHub's actual format)
+        let parsedEventData: any = null;
+        if (body.eventData && typeof body.eventData === 'string') {
+            try {
+                parsedEventData = JSON.parse(body.eventData);
+                console.log('[Webhook] Parsed eventData:', JSON.stringify(parsedEventData).substring(0, 300));
+            } catch (e) {
+                console.warn('[Webhook] Failed to parse eventData:', body.eventData.substring(0, 200));
+            }
+        } else if (body.eventData && typeof body.eventData === 'object') {
+            parsedEventData = body.eventData;
+        }
+
         // Determine status
+        // RunningHub uses "event" field: TASK_END = success, TASK_FAIL = failed
+        const event = body.event || '';
         const rawStatus = body.status || body.taskStatus || body.data?.taskStatus || '';
-        const isSuccess = rawStatus === 'success' || rawStatus === 'SUCCESS' ||
-                          rawStatus === 'completed' || rawStatus === 'COMPLETED';
-        const isFailed = rawStatus === 'failed' || rawStatus === 'FAILED' ||
+
+        const isSuccess = event === 'TASK_END' ||
+                          rawStatus === 'success' || rawStatus === 'SUCCESS' ||
+                          rawStatus === 'completed' || rawStatus === 'COMPLETED' ||
+                          (parsedEventData?.code === 0 && parsedEventData?.msg === 'success');
+        const isFailed = event === 'TASK_FAIL' ||
+                         rawStatus === 'failed' || rawStatus === 'FAILED' ||
                          rawStatus === 'error' || rawStatus === 'ERROR';
         const status = isSuccess ? 'SUCCESS' : isFailed ? 'FAILED' : 'RUNNING';
 
-        // Extract output image URL
+        // Extract output image URL from multiple possible locations
         let outputImageUrl: string | null = null;
-        const outputs = body.data || body.outputs || body.output;
 
-        if (Array.isArray(outputs)) {
-            // Find the first image output with a fileUrl
-            for (const item of outputs) {
-                const url = item.fileUrl || item.output?.fileUrl || item.file_url;
-                if (url) {
-                    outputImageUrl = url;
+        // 1. Try parsedEventData.data array (RunningHub's actual format)
+        if (parsedEventData?.data && Array.isArray(parsedEventData.data)) {
+            for (const item of parsedEventData.data) {
+                if (item.fileUrl) {
+                    outputImageUrl = item.fileUrl;
                     break;
                 }
             }
-        } else if (outputs && typeof outputs === 'object') {
-            outputImageUrl = outputs.fileUrl || outputs.file_url || outputs.output?.fileUrl || null;
+        }
+
+        // 2. Try body.data or body.outputs (legacy formats)
+        if (!outputImageUrl) {
+            const outputs = body.data || body.outputs || body.output;
+            if (Array.isArray(outputs)) {
+                for (const item of outputs) {
+                    const url = item.fileUrl || item.output?.fileUrl || item.file_url;
+                    if (url) {
+                        outputImageUrl = url;
+                        break;
+                    }
+                }
+            } else if (outputs && typeof outputs === 'object') {
+                outputImageUrl = outputs.fileUrl || outputs.file_url || outputs.output?.fileUrl || null;
+            }
         }
 
         // Extract error message for failed tasks
         const errorMessage = isFailed
-            ? (body.message || body.msg || body.error || '任务处理失败')
+            ? (parsedEventData?.msg || body.message || body.msg || body.error || '任务处理失败')
             : null;
 
         // Update database
