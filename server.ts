@@ -208,7 +208,7 @@ const upload = multer({
     fileFilter: (_req, file, cb) => {
         // Allow common image, audio, and video types
         const allowedMimes = [
-            'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+            'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif',
             'audio/mpeg', 'audio/wav', 'audio/flac',
             'video/mp4', 'video/avi', 'video/quicktime', 'video/x-matroska',
             'application/zip',
