@@ -3,6 +3,19 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import path from 'path';
 import crypto from 'crypto';
+import multer from 'multer';
+import {
+    initDatabase,
+    hasActiveTask,
+    createTask as createDbTask,
+    updateTaskByTaskId,
+    getLatestTask,
+    cleanStaleTasks,
+} from './db.js';
+import {
+    submitPhotoRestore,
+    uploadFileV2,
+} from './runninghub.js';
 
 // ============================================================
 // Constants & Helpers
@@ -185,6 +198,115 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json());
+
+// Multer configuration: store files in memory (for forwarding to RunningHub)
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 10 * 1024 * 1024, // 10MB max
+    },
+    fileFilter: (_req, file, cb) => {
+        // Allow common image, audio, and video types
+        const allowedMimes = [
+            'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+            'audio/mpeg', 'audio/wav', 'audio/flac',
+            'video/mp4', 'video/avi', 'video/quicktime', 'video/x-matroska',
+            'application/zip',
+        ];
+        if (allowedMimes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error(`不支持的文件类型: ${file.mimetype}`));
+        }
+    },
+});
+
+// ============================================================
+// API: POST /api/wechat/login — 微信小程序登录（code 换取 openid）
+// ============================================================
+app.post('/api/wechat/login', async (req, res) => {
+    try {
+        const { code } = req.body;
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+
+        const appId = process.env.WECHAT_APPID;
+        const appSecret = process.env.WECHAT_SECRET;
+
+        if (!appId || !appSecret) {
+            console.error('[WechatLogin] WECHAT_APPID or WECHAT_SECRET not configured');
+            return res.status(500).json({
+                success: false,
+                error: '服务端微信配置缺失，请联系管理员',
+            });
+        }
+
+        console.log('[WechatLogin] Exchanging code for openid...');
+
+        // Call WeChat jscode2session API
+        const wxRes = await axios.get('https://api.weixin.qq.com/sns/jscode2session', {
+            params: {
+                appid: appId,
+                secret: appSecret,
+                js_code: code,
+                grant_type: 'authorization_code',
+            },
+            timeout: 10000,
+        });
+
+        const wxData = wxRes.data;
+        console.log('[WechatLogin] WeChat response:', JSON.stringify({
+            openid: wxData.openid ? '***' : undefined,
+            errcode: wxData.errcode,
+            errmsg: wxData.errmsg,
+        }));
+
+        // WeChat returns errcode on failure (0 or absent on success)
+        if (wxData.errcode && wxData.errcode !== 0) {
+            const errorMessages: Record<number, string> = {
+                40029: 'code 无效或已过期，请重新调用 wx.login',
+                45011: '请求频率限制，请稍后再试',
+                40226: '高风险等级用户，小程序登录拦截',
+                [-1]: '微信系统繁忙，请稍后再试',
+            };
+            const msg = errorMessages[wxData.errcode] || wxData.errmsg || '微信登录失败';
+            return res.status(400).json({
+                success: false,
+                error: msg,
+                errcode: wxData.errcode,
+            });
+        }
+
+        if (!wxData.openid) {
+            return res.status(500).json({
+                success: false,
+                error: '微信登录异常：未返回 openid',
+            });
+        }
+
+        // Return openid (and optionally unionid if available)
+        // NOTE: session_key MUST NOT be sent to the client for security reasons
+        const responseData: any = {
+            openid: wxData.openid,
+        };
+        if (wxData.unionid) {
+            responseData.unionid = wxData.unionid;
+        }
+
+        res.json({
+            success: true,
+            message: '登录成功',
+            data: responseData,
+        });
+    } catch (error: any) {
+        console.error('[WechatLogin] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '微信登录失败：' + (error.message || '未知错误'),
+        });
+    }
+});
 
 // ============================================================
 // API: POST /api/parse — 解析抖音视频链接
@@ -494,6 +616,267 @@ app.get('/api/proxy', async (req, res) => {
 });
 
 // ============================================================
+// API: POST /api/upload — 文件上传（转发至 RunningHub）
+// ============================================================
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+    try {
+        const file = req.file;
+        if (!file) {
+            return res.status(400).json({
+                success: false,
+                error: '请上传文件（字段名: file）',
+            });
+        }
+
+        console.log(`[Upload] Received file: ${file.originalname}, size: ${file.size}, type: ${file.mimetype}`);
+
+        // Forward the file to RunningHub V2 upload API
+        const result = await uploadFileV2(file.buffer, file.originalname, file.mimetype);
+
+        console.log(`[Upload] Success: downloadUrl=${result.downloadUrl?.substring(0, 80)}, fileName=${result.fileName}`);
+
+        res.json({
+            success: true,
+            message: '文件上传成功',
+            data: {
+                /** 公网可访问的下载链接（有效期约1天） */
+                downloadUrl: result.downloadUrl,
+                /** RunningHub 内部文件名，用于后续工作流接口调用 */
+                fileName: result.fileName,
+                /** 文件类型 */
+                type: result.type,
+                /** 文件大小（字节） */
+                size: result.size,
+            },
+        });
+    } catch (error: any) {
+        console.error('[Upload] Error:', error.message);
+
+        // Handle multer-specific errors
+        if (error instanceof multer.MulterError) {
+            if (error.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({
+                    success: false,
+                    error: '文件大小超过限制（最大 10MB）',
+                });
+            }
+            return res.status(400).json({
+                success: false,
+                error: `文件上传错误: ${error.message}`,
+            });
+        }
+
+        // Handle file type validation errors
+        if (error.message?.includes('不支持的文件类型')) {
+            return res.status(400).json({
+                success: false,
+                error: error.message,
+            });
+        }
+
+        res.status(500).json({
+            success: false,
+            error: '文件上传失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
+// API: POST /api/photo/restore — 发起老照片修复任务
+// ============================================================
+app.post('/api/photo/restore', async (req, res) => {
+    try {
+        const { openid, bizCode, imageUrl, cnStrength, outputSize } = req.body;
+
+        // Validate required fields
+        if (!openid || typeof openid !== 'string') {
+            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (!imageUrl || typeof imageUrl !== 'string') {
+            return res.status(400).json({ success: false, error: 'imageUrl 参数必填' });
+        }
+
+        // Validate imageUrl format
+        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'imageUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+
+        console.log(`[PhotoRestore] Request from openid=${openid}, bizCode=${bizCode}`);
+
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, bizCode);
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+
+        // Submit photo restoration to RunningHub with optional parameters
+        const taskId = await submitPhotoRestore(imageUrl, {
+            cnStrength: typeof cnStrength === 'number' ? cnStrength : undefined,
+            outputSize: typeof outputSize === 'number' ? outputSize : undefined,
+        });
+
+        // Save to database
+        const task = await createDbTask(openid, bizCode, taskId, imageUrl);
+        console.log(`[PhotoRestore] Task created: id=${task.id}, taskId=${taskId}`);
+
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    } catch (error: any) {
+        console.error('[PhotoRestore] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
+// API: POST /api/webhook/runninghub — 接收 RunningHub 回调
+// ============================================================
+app.post('/api/webhook/runninghub', async (req, res) => {
+    try {
+        const body = req.body;
+        console.log('[Webhook] Received callback:', JSON.stringify(body).substring(0, 500));
+
+        // Extract taskId from the callback payload
+        // RunningHub may send in different formats, handle flexibly
+        const taskId = body.taskId || body.data?.taskId || body.task_id;
+        if (!taskId) {
+            console.error('[Webhook] No taskId found in callback body');
+            return res.status(400).json({ error: 'taskId is required' });
+        }
+
+        // Determine status
+        const rawStatus = body.status || body.taskStatus || body.data?.taskStatus || '';
+        const isSuccess = rawStatus === 'success' || rawStatus === 'SUCCESS' ||
+                          rawStatus === 'completed' || rawStatus === 'COMPLETED';
+        const isFailed = rawStatus === 'failed' || rawStatus === 'FAILED' ||
+                         rawStatus === 'error' || rawStatus === 'ERROR';
+        const status = isSuccess ? 'SUCCESS' : isFailed ? 'FAILED' : 'RUNNING';
+
+        // Extract output image URL
+        let outputImageUrl: string | null = null;
+        const outputs = body.data || body.outputs || body.output;
+
+        if (Array.isArray(outputs)) {
+            // Find the first image output with a fileUrl
+            for (const item of outputs) {
+                const url = item.fileUrl || item.output?.fileUrl || item.file_url;
+                if (url) {
+                    outputImageUrl = url;
+                    break;
+                }
+            }
+        } else if (outputs && typeof outputs === 'object') {
+            outputImageUrl = outputs.fileUrl || outputs.file_url || outputs.output?.fileUrl || null;
+        }
+
+        // Extract error message for failed tasks
+        const errorMessage = isFailed
+            ? (body.message || body.msg || body.error || '任务处理失败')
+            : null;
+
+        // Update database
+        const updatedTask = await updateTaskByTaskId(taskId, status, body, outputImageUrl, errorMessage);
+
+        if (updatedTask) {
+            console.log(`[Webhook] Task ${taskId} updated to ${status}, outputUrl=${outputImageUrl?.substring(0, 80)}`);
+        } else {
+            console.warn(`[Webhook] Task ${taskId} not found in database`);
+        }
+
+        // Always return 200 to acknowledge receipt
+        res.json({ success: true, message: 'Webhook received' });
+    } catch (error: any) {
+        console.error('[Webhook] Error processing callback:', error.message);
+        // Still return 200 to prevent RunningHub from retrying
+        res.json({ success: true, message: 'Webhook received (with errors)' });
+    }
+});
+
+// ============================================================
+// API: GET /api/photo/result — 查询任务处理结果
+// ============================================================
+app.get('/api/photo/result', async (req, res) => {
+    try {
+        const { openid, bizCode } = req.query;
+
+        // Validate required fields
+        if (!openid || typeof openid !== 'string') {
+            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+
+        console.log(`[Result] Query from openid=${openid}, bizCode=${bizCode}`);
+
+        // Get latest task
+        const task = await getLatestTask(openid, bizCode);
+
+        if (!task) {
+            return res.json({
+                success: true,
+                data: {
+                    status: 'NONE',
+                    message: '没有找到相关任务记录',
+                },
+            });
+        }
+
+        // Build response based on task status
+        const responseData: any = {
+            status: task.status,
+            taskId: task.task_id,
+            createdAt: task.created_at,
+            updatedAt: task.updated_at,
+        };
+
+        switch (task.status) {
+            case 'PENDING':
+                responseData.message = '任务已提交，正在排队中...';
+                break;
+            case 'RUNNING':
+                responseData.message = '任务正在处理中，请稍后再查询';
+                break;
+            case 'SUCCESS':
+                responseData.message = '任务处理完成';
+                responseData.outputImageUrl = task.output_image_url;
+                responseData.inputImageUrl = task.input_image_url;
+                break;
+            case 'FAILED':
+                responseData.message = task.error_message || '任务处理失败';
+                break;
+            default:
+                responseData.message = '未知状态';
+        }
+
+        res.json({
+            success: true,
+            data: responseData,
+        });
+    } catch (error: any) {
+        console.error('[Result] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '查询失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
 // Serve frontend
 // ============================================================
 if (process.env.NODE_ENV === 'production') {
@@ -514,6 +897,21 @@ if (process.env.NODE_ENV === 'production') {
     startVite();
 }
 
-app.listen(PORT, '0.0.0.0', () => {
+// ============================================================
+// Start Server
+// ============================================================
+app.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
+
+    // Initialize database (non-blocking, won't crash if DB is unavailable)
+    try {
+        await initDatabase();
+        // Clean up stale tasks on startup
+        const cleaned = await cleanStaleTasks();
+        if (cleaned > 0) {
+            console.log(`[Startup] Cleaned ${cleaned} stale task(s)`);
+        }
+    } catch (err: any) {
+        console.warn('[Startup] Database initialization skipped:', err.message);
+    }
 });

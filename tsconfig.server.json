@@ -12,7 +12,9 @@
         "isolatedModules": true
     },
     "include": [
-        "server.ts"
+        "server.ts",
+        "db.ts",
+        "runninghub.ts"
     ],
     "exclude": [
         "node_modules",
