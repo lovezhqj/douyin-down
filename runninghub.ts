@@ -382,35 +382,42 @@ export async function submitPhotoRestore(
 /**
  * Anime conversion workflow configuration.
  * The workflowId and nodeInfoList are configured via environment variables.
+ *
+ * Workflow node mapping (from 真人转动漫_api.json):
+ * Node 425 (LoadImage)                — fieldName: "image"  — 上传的待转换真人照片
+ * Node 447 (TextEncodeQwenImageEdit)  — fieldName: "prompt" — 正向提示词（默认"写实风格转漫画风格，唯美国漫风"）
  */
 export function getAnimeConvertConfig() {
     // The webapp/workflow ID for anime conversion — 真人转动漫
     const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_ANIME_CONVERT || '2059878371705843713';
 
-    // Workflow node mapping (from 真人转动漫 API page):
-    // Node 14 (LoadImage) — fieldName: "image" — 上传的待转换真人照片
     return {
         workflowId,
         // Primary image input node
-        imageNodeId: '14',
+        imageNodeId: '425',
         imageFieldName: 'image',
+        // Prompt node for controlling anime style
+        promptNodeId: '447',
+        promptFieldName: 'prompt',
+        promptDefault: '写实风格转漫画风格，唯美国漫风',
     };
 }
 
 export interface AnimeConvertOptions {
-    /** Reserved for future parameters */
+    /** Prompt to control the anime style. Default: "写实风格转漫画风格，唯美国漫风" */
+    prompt?: string;
 }
 
 /**
  * Execute the full anime conversion flow:
  * 1. Upload image to RunningHub
- * 2. Create task with the uploaded image
+ * 2. Create task with the uploaded image and prompt
  *
  * Returns the taskId for tracking.
  */
 export async function submitAnimeConvert(
     imageUrl: string,
-    _options: AnimeConvertOptions = {},
+    options: AnimeConvertOptions = {},
 ): Promise<string> {
     // Step 1: Upload image
     const uploadResult = await uploadImage(imageUrl);
@@ -425,6 +432,12 @@ export async function submitAnimeConvert(
             fieldName: config.imageFieldName,
             fieldValue: uploadResult.fileName,
         },
+        // Prompt: controls the anime style
+        {
+            nodeId: config.promptNodeId,
+            fieldName: config.promptFieldName,
+            fieldValue: options.prompt ?? config.promptDefault,
+        },
     ];
 
     console.log('[RunningHub] Anime convert nodeInfoList:', JSON.stringify(nodeInfoList));
@@ -435,3 +448,4 @@ export async function submitAnimeConvert(
 
     return taskResult.taskId;
 }
+

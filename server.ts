@@ -748,7 +748,7 @@ app.post('/api/photo/restore', async (req, res) => {
 // ============================================================
 app.post('/api/photo/anime', async (req, res) => {
     try {
-        const { openid, bizCode, imageUrl } = req.body;
+        const { openid, bizCode, imageUrl, prompt } = req.body;
 
         // Validate required fields
         if (!openid || typeof openid !== 'string') {
@@ -777,8 +777,10 @@ app.post('/api/photo/anime', async (req, res) => {
             });
         }
 
-        // Submit anime conversion to RunningHub
-        const taskId = await submitAnimeConvert(imageUrl);
+        // Submit anime conversion to RunningHub with optional prompt
+        const taskId = await submitAnimeConvert(imageUrl, {
+            prompt: typeof prompt === 'string' ? prompt : undefined,
+        });
 
         // Save to database
         const task = await createDbTask(openid, bizCode, taskId, imageUrl);

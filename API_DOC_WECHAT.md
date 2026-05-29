@@ -308,6 +308,7 @@ Content-Type: application/json
 | `openid` | string | ✅ | 微信用户的 openid |
 | `bizCode` | string | ✅ | 业务代码，真人转动漫固定为 `anime_convert` |
 | `imageUrl` | string | ✅ | 待转换照片的 URL（需公网可访问的 http/https 链接） |
+| `prompt` | string | ❌ | 风格提示词。默认 `"写实风格转漫画风格，唯美国漫风"` |
 
 #### 请求示例
 
@@ -316,6 +317,17 @@ Content-Type: application/json
   "openid": "oABC123456789",
   "bizCode": "anime_convert",
   "imageUrl": "https://your-oss.com/photos/portrait.jpg"
+}
+```
+
+带自定义风格提示词的请求示例：
+
+```json
+{
+  "openid": "oABC123456789",
+  "bizCode": "anime_convert",
+  "imageUrl": "https://your-oss.com/photos/portrait.jpg",
+  "prompt": "写实风格转日系动漫风格，宫崎骏风"
 }
 ```
 
