@@ -374,3 +374,64 @@ export async function submitPhotoRestore(
 
     return taskResult.taskId;
 }
+
+// ============================================================
+// Anime Conversion (真人转动漫) Workflow
+// ============================================================
+
+/**
+ * Anime conversion workflow configuration.
+ * The workflowId and nodeInfoList are configured via environment variables.
+ */
+export function getAnimeConvertConfig() {
+    // The webapp/workflow ID for anime conversion — 真人转动漫
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_ANIME_CONVERT || '2059878371705843713';
+
+    // Workflow node mapping (from 真人转动漫 API page):
+    // Node 14 (LoadImage) — fieldName: "image" — 上传的待转换真人照片
+    return {
+        workflowId,
+        // Primary image input node
+        imageNodeId: '14',
+        imageFieldName: 'image',
+    };
+}
+
+export interface AnimeConvertOptions {
+    /** Reserved for future parameters */
+}
+
+/**
+ * Execute the full anime conversion flow:
+ * 1. Upload image to RunningHub
+ * 2. Create task with the uploaded image
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitAnimeConvert(
+    imageUrl: string,
+    _options: AnimeConvertOptions = {},
+): Promise<string> {
+    // Step 1: Upload image
+    const uploadResult = await uploadImage(imageUrl);
+    console.log('[RunningHub] Image uploaded for anime conversion:', uploadResult.fileName);
+
+    // Step 2: Build nodeInfoList from workflow configuration
+    const config = getAnimeConvertConfig();
+    const nodeInfoList: Array<{ nodeId: string; fieldName: string; fieldValue: string }> = [
+        // Required: the image to convert
+        {
+            nodeId: config.imageNodeId,
+            fieldName: config.imageFieldName,
+            fieldValue: uploadResult.fileName,
+        },
+    ];
+
+    console.log('[RunningHub] Anime convert nodeInfoList:', JSON.stringify(nodeInfoList));
+
+    // Step 3: Create task
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Anime convert task created:', taskResult.taskId);
+
+    return taskResult.taskId;
+}

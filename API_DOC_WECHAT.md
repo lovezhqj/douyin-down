@@ -1,6 +1,6 @@
-# 微信小程序端 - 老照片修复接口调用文档
+# 微信小程序端 - AI 图像处理接口调用文档
 
-> 本文档提供微信小程序端调用老照片修复相关接口的完整说明。
+> 本文档提供微信小程序端调用 AI 图像处理相关接口（老照片修复、真人转动漫等）的完整说明。
 
 ---
 
@@ -11,7 +11,8 @@
    - [微信登录](#1-微信登录)
    - [文件上传](#2-文件上传)
    - [发起老照片修复](#3-发起老照片修复)
-   - [查询任务结果](#4-查询任务结果)
+   - [发起真人转动漫](#4-发起真人转动漫)
+   - [查询任务结果](#5-查询任务结果)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -27,6 +28,7 @@
 | 微信登录 | `POST` | `/api/wechat/login` | 小程序登录，code 换取 openid |
 | 文件上传 | `POST` | `/api/upload` | 上传文件到服务器，返回公网可访问的 URL |
 | 发起老照片修复 | `POST` | `/api/photo/restore` | 提交照片修复任务（异步处理） |
+| 发起真人转动漫 | `POST` | `/api/photo/anime` | 提交真人转动漫任务（异步处理） |
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
 
 **Base URL**: `https://douyin-down.fly.dev`
@@ -287,7 +289,85 @@ Content-Type: application/json
 
 ---
 
-### 4. 查询任务结果
+### 4. 发起真人转动漫
+
+**POST** `/api/photo/anime`
+
+发起一个真人转动漫任务。将真人照片转换为动漫风格。任务会异步处理，不会立即返回结果。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `openid` | string | ✅ | 微信用户的 openid |
+| `bizCode` | string | ✅ | 业务代码，真人转动漫固定为 `anime_convert` |
+| `imageUrl` | string | ✅ | 待转换照片的 URL（需公网可访问的 http/https 链接） |
+
+#### 请求示例
+
+```json
+{
+  "openid": "oABC123456789",
+  "bizCode": "anime_convert",
+  "imageUrl": "https://your-oss.com/photos/portrait.jpg"
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "任务已提交，正在后台处理中，请稍后查询结果",
+  "data": {
+    "taskId": "rh_task_1234567890",
+    "status": "PENDING"
+  }
+}
+```
+
+#### 响应 - 有正在处理的任务 (409)
+
+```json
+{
+  "success": false,
+  "error": "您有一个正在处理中的任务，请等待处理完成后再次提交"
+}
+```
+
+> [!WARNING]
+> **并发限制**：同一用户（openid）+ 同一业务代码（bizCode）只能有一个进行中的任务。必须等上一个任务完成（SUCCESS 或 FAILED）后才能再次提交。
+
+#### 响应 - 参数错误 (400)
+
+```json
+{
+  "success": false,
+  "error": "openid 参数必填"
+}
+```
+
+#### 响应 - 服务器错误 (500)
+
+```json
+{
+  "success": false,
+  "error": "提交任务失败：具体错误信息"
+}
+```
+
+> [!TIP]
+> 真人转动漫只需传入一张清晰的人物照片即可，无需额外参数。建议使用正面、光线充足的照片以获得最佳效果。
+
+---
+
+### 5. 查询任务结果
 
 **GET** `/api/photo/result`
 
@@ -460,11 +540,12 @@ GET /api/photo/result?openid=oABC123456789&bizCode=photo_restore
 | bizCode | 说明 | 状态 |
 |---------|------|------|
 | `photo_restore` | 老照片修复 | ✅ 已上线 |
+| `anime_convert` | 真人转动漫 | ✅ 已上线 |
 | `photo_expand` | 照片扩图 | 🔜 计划中 |
 | `photo_colorize` | 黑白照片上色 | 🔜 计划中 |
 
 > [!NOTE]
-> `bizCode` 用于区分不同的业务场景。不同业务之间的并发限制是独立的。即用户可以同时进行一个老照片修复和一个照片扩图任务。
+> `bizCode` 用于区分不同的业务场景。不同业务之间的并发限制是独立的。即用户可以同时进行一个老照片修复和一个真人转动漫任务。
 
 ---
 
@@ -580,6 +661,41 @@ export function submitPhotoRestore(openid, imageUrl) {
       data: {
         openid: openid,
         bizCode: 'photo_restore',
+        imageUrl: imageUrl,
+      },
+      success(res) {
+        if (res.statusCode === 200 && res.data.success) {
+          resolve(res.data);
+        } else if (res.statusCode === 409) {
+          reject(new Error(res.data.error || '有正在处理中的任务'));
+        } else {
+          reject(new Error(res.data.error || '提交失败'));
+        }
+      },
+      fail(err) {
+        reject(new Error('网络请求失败'));
+      },
+    });
+  });
+}
+
+/**
+ * 发起真人转动漫
+ * @param {string} openid - 微信用户 openid
+ * @param {string} imageUrl - 待转换照片的公网 URL（从 uploadFile 返回的 downloadUrl）
+ * @returns {Promise<object>}
+ */
+export function submitAnimeConvert(openid, imageUrl) {
+  return new Promise((resolve, reject) => {
+    wx.request({
+      url: `${BASE_URL}/api/photo/anime`,
+      method: 'POST',
+      header: {
+        'Content-Type': 'application/json',
+      },
+      data: {
+        openid: openid,
+        bizCode: 'anime_convert',
         imageUrl: imageUrl,
       },
       success(res) {
@@ -809,6 +925,194 @@ Page({
 </view>
 ```
 
+### 真人转动漫页面调用示例
+
+```javascript
+// pages/anime-convert/index.js
+import { wechatLogin, uploadFile, submitAnimeConvert, queryTaskResult } from '../../utils/api';
+
+Page({
+  data: {
+    status: 'idle',      // idle | uploading | pending | running | success | failed
+    resultImageUrl: '',
+    originalImageUrl: '',
+    errorMessage: '',
+    openid: '',
+  },
+
+  // 页面加载时自动登录
+  async onLoad() {
+    try {
+      const loginResult = await wechatLogin();
+      this.setData({ openid: loginResult.openid });
+      console.log('登录成功，openid:', loginResult.openid);
+      getApp().globalData.openid = loginResult.openid;
+    } catch (err) {
+      console.error('登录失败:', err.message);
+      wx.showToast({ title: '登录失败，请重试', icon: 'none' });
+    }
+  },
+
+  // 用户选择照片并提交动漫转换
+  async onChoosePhoto() {
+    try {
+      // 1. 选择图片
+      const chooseResult = await wx.chooseMedia({
+        count: 1,
+        mediaType: ['image'],
+        sourceType: ['album', 'camera'],
+      });
+
+      const tempFilePath = chooseResult.tempFiles[0].tempFilePath;
+      this.setData({ status: 'uploading', originalImageUrl: tempFilePath });
+
+      // 2. 上传照片到服务器
+      const uploadResult = await uploadFile(tempFilePath);
+      const imageUrl = uploadResult.downloadUrl;
+      console.log('文件上传成功，公网URL:', imageUrl);
+
+      // 3. 获取用户 openid
+      const openid = this.data.openid || getApp().globalData.openid;
+      if (!openid) {
+        throw new Error('未登录，请重新打开小程序');
+      }
+
+      // 4. 提交动漫转换任务
+      this.setData({ status: 'pending' });
+      const result = await submitAnimeConvert(openid, imageUrl);
+      console.log('任务已提交:', result);
+
+      wx.showToast({
+        title: '已提交，后台处理中',
+        icon: 'success',
+      });
+
+      // 5. 开始轮询查询结果
+      this.startPolling(openid, 'anime_convert');
+    } catch (err) {
+      this.setData({
+        status: 'failed',
+        errorMessage: err.message,
+      });
+      wx.showToast({
+        title: err.message,
+        icon: 'none',
+      });
+    }
+  },
+
+  // 轮询查询结果
+  startPolling(openid, bizCode) {
+    let count = 0;
+    const maxCount = 60;
+    const interval = 5000;
+
+    const poll = async () => {
+      if (count >= maxCount) {
+        this.setData({
+          status: 'failed',
+          errorMessage: '处理超时，请稍后手动查询',
+        });
+        return;
+      }
+
+      count++;
+      try {
+        const result = await queryTaskResult(openid, bizCode);
+
+        switch (result.status) {
+          case 'SUCCESS':
+            this.setData({
+              status: 'success',
+              resultImageUrl: result.outputImageUrl,
+            });
+            wx.showToast({ title: '转换完成！', icon: 'success' });
+            return;
+
+          case 'FAILED':
+            this.setData({
+              status: 'failed',
+              errorMessage: result.message,
+            });
+            return;
+
+          case 'PENDING':
+            this.setData({ status: 'pending' });
+            break;
+
+          case 'RUNNING':
+            this.setData({ status: 'running' });
+            break;
+        }
+
+        setTimeout(poll, interval);
+      } catch (err) {
+        console.error('查询失败:', err);
+        setTimeout(poll, interval);
+      }
+    };
+
+    setTimeout(poll, interval);
+  },
+});
+```
+
+### 真人转动漫 WXML 页面模板示例
+
+```html
+<!-- pages/anime-convert/index.wxml -->
+<view class="container">
+  <view class="title">真人转动漫</view>
+
+  <!-- 选择照片按钮 -->
+  <button
+    wx:if="{{status === 'idle' || status === 'success' || status === 'failed'}}"
+    bindtap="onChoosePhoto"
+    type="primary"
+  >
+    选择照片开始转换
+  </button>
+
+  <!-- 处理中状态 -->
+  <view wx:if="{{status === 'uploading'}}" class="loading">
+    <text>正在上传照片...</text>
+  </view>
+
+  <view wx:if="{{status === 'pending'}}" class="loading">
+    <text>任务已提交，正在排队中...</text>
+  </view>
+
+  <view wx:if="{{status === 'running'}}" class="loading">
+    <text>动漫转换处理中，请稍候...</text>
+  </view>
+
+  <!-- 成功结果 -->
+  <view wx:if="{{status === 'success'}}" class="result">
+    <text>转换完成！</text>
+    <view class="compare">
+      <view class="compare-item">
+        <text>原图</text>
+        <image src="{{originalImageUrl}}" mode="widthFix" />
+      </view>
+      <view class="compare-item">
+        <text>动漫风</text>
+        <image
+          src="{{resultImageUrl}}"
+          mode="widthFix"
+          show-menu-by-longpress="{{true}}"
+        />
+      </view>
+    </view>
+  </view>
+
+  <!-- 失败状态 -->
+  <view wx:if="{{status === 'failed'}}" class="error">
+    <text>{{errorMessage}}</text>
+    <button bindtap="onChoosePhoto" size="mini">重新提交</button>
+  </view>
+</view>
+```
+
 ---
 
 ## 常见问题
@@ -839,3 +1143,4 @@ A: 需要配置以下环境变量：
 - `WECHAT_SECRET` — 微信小程序 AppSecret
 - `RUNNINGHUB_API_KEY` — RunningHub API 密钥
 - `DATABASE_URL` — PostgreSQL 数据库连接字符串
+- `RUNNINGHUB_WEBAPP_ID_ANIME_CONVERT` — （可选）真人转动漫工作流 ID，默认为 `2059878371705843713`

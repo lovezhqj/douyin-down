@@ -14,6 +14,7 @@ import {
 } from './db.js';
 import {
     submitPhotoRestore,
+    submitAnimeConvert,
     uploadFileV2,
 } from './runninghub.js';
 
@@ -735,6 +736,64 @@ app.post('/api/photo/restore', async (req, res) => {
         });
     } catch (error: any) {
         console.error('[PhotoRestore] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
+// API: POST /api/photo/anime — 发起真人转动漫任务
+// ============================================================
+app.post('/api/photo/anime', async (req, res) => {
+    try {
+        const { openid, bizCode, imageUrl } = req.body;
+
+        // Validate required fields
+        if (!openid || typeof openid !== 'string') {
+            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (!imageUrl || typeof imageUrl !== 'string') {
+            return res.status(400).json({ success: false, error: 'imageUrl 参数必填' });
+        }
+
+        // Validate imageUrl format
+        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'imageUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+
+        console.log(`[AnimeConvert] Request from openid=${openid}, bizCode=${bizCode}`);
+
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, bizCode);
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+
+        // Submit anime conversion to RunningHub
+        const taskId = await submitAnimeConvert(imageUrl);
+
+        // Save to database
+        const task = await createDbTask(openid, bizCode, taskId, imageUrl);
+        console.log(`[AnimeConvert] Task created: id=${task.id}, taskId=${taskId}`);
+
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    } catch (error: any) {
+        console.error('[AnimeConvert] Error:', error.message);
         res.status(500).json({
             success: false,
             error: '提交任务失败：' + (error.message || '未知错误'),
