@@ -449,3 +449,149 @@ export async function submitAnimeConvert(
     return taskResult.taskId;
 }
 
+// ============================================================
+// Voice Cloning (语音克隆) Workflow
+// ============================================================
+
+/**
+ * Upload an audio file to RunningHub.
+ * Downloads the audio from the given URL first, then uploads to RunningHub.
+ *
+ * POST https://www.runninghub.cn/task/openapi/upload
+ * Content-Type: multipart/form-data
+ */
+export async function uploadAudio(audioUrl: string): Promise<UploadResult> {
+    console.log('[RunningHub] Uploading audio from URL:', audioUrl.substring(0, 100));
+
+    // Step 1: Download the audio from the source URL
+    const audioResponse = await axios.get(audioUrl, {
+        responseType: 'arraybuffer',
+        timeout: 30000,
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; AudioCloneBot/1.0)',
+        },
+    });
+
+    const audioBuffer = Buffer.from(audioResponse.data);
+    const contentType = audioResponse.headers['content-type'] || 'audio/mpeg';
+
+    // Determine file extension from content type
+    let ext = 'mp3';
+    if (contentType.includes('wav')) ext = 'wav';
+    else if (contentType.includes('flac')) ext = 'flac';
+    else if (contentType.includes('ogg')) ext = 'ogg';
+
+    // Step 2: Upload to RunningHub
+    const form = new FormData();
+    form.append('file', audioBuffer, {
+        filename: `upload.${ext}`,
+        contentType: contentType,
+    });
+    form.append('apiKey', getApiKey());
+    form.append('fileType', 'audio');
+
+    const response = await axios.post(
+        `${RUNNINGHUB_BASE_URL}/task/openapi/upload`,
+        form,
+        {
+            headers: {
+                ...form.getHeaders(),
+            },
+            timeout: 60000,
+        }
+    );
+
+    console.log('[RunningHub] Audio upload response:', JSON.stringify(response.data));
+
+    if (response.data.code !== 0) {
+        throw new Error(`Audio upload failed: ${response.data.msg || JSON.stringify(response.data)}`);
+    }
+
+    return {
+        fileName: response.data.data?.fileName || response.data.data,
+        fileType: response.data.data?.fileType || 'input',
+    };
+}
+
+/**
+ * Voice cloning workflow configuration.
+ * The workflowId and nodeInfoList are configured via environment variables.
+ *
+ * Workflow node mapping (from IndexTTS2 1965684535247650818):
+ * Node 9 (LoadAudio)        — fieldName: "audio"  — 上传的克隆参考音频
+ * Node 6 (Text Multiline)   — fieldName: "text"   — 语音文本内容
+ * Node 17 (CR Text)         — fieldName: "text"   — 情感描述（默认："害羞的"）
+ */
+export function getVoiceCloneConfig() {
+    // The webapp/workflow ID for Voice Cloning — IndexTTS2
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_VOICE_CLONE || '1965684535247650818';
+
+    return {
+        workflowId,
+        // Reference audio node
+        audioNodeId: '9',
+        audioFieldName: 'audio',
+        // Text prompt node
+        textNodeId: '6',
+        textFieldName: 'text',
+        // Emotion node
+        emotionNodeId: '17',
+        emotionFieldName: 'text',
+        emotionDefault: '害羞的',
+    };
+}
+
+export interface VoiceCloneOptions {
+    /** Emotion description for the cloned voice, e.g. "害羞的", "开心", "愤怒". Default: "害羞的" */
+    emotion?: string;
+}
+
+/**
+ * Execute the full voice cloning flow:
+ * 1. Upload reference audio to RunningHub
+ * 2. Create task with the uploaded audio, text, and optional emotion
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitVoiceClone(
+    audioUrl: string,
+    text: string,
+    options: VoiceCloneOptions = {},
+): Promise<string> {
+    // Step 1: Upload reference audio
+    const uploadResult = await uploadAudio(audioUrl);
+    console.log('[RunningHub] Reference audio uploaded for voice cloning:', uploadResult.fileName);
+
+    // Step 2: Build nodeInfoList from workflow configuration
+    const config = getVoiceCloneConfig();
+    const nodeInfoList: Array<{ nodeId: string; fieldName: string; fieldValue: string }> = [
+        // Required: the audio to clone from
+        {
+            nodeId: config.audioNodeId,
+            fieldName: config.audioFieldName,
+            fieldValue: uploadResult.fileName,
+        },
+        // Required: the text to synthesize
+        {
+            nodeId: config.textNodeId,
+            fieldName: config.textFieldName,
+            fieldValue: text,
+        },
+        // Optional: emotion description
+        {
+            nodeId: config.emotionNodeId,
+            fieldName: config.emotionFieldName,
+            fieldValue: options.emotion ?? config.emotionDefault,
+        },
+    ];
+
+    console.log('[RunningHub] Voice clone nodeInfoList:', JSON.stringify(nodeInfoList));
+
+    // Step 3: Create task
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Voice clone task created:', taskResult.taskId);
+
+    return taskResult.taskId;
+}
+
+

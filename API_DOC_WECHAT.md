@@ -1,6 +1,6 @@
-# 微信小程序端 - AI 图像处理接口调用文档
+# 微信小程序端 - AI 图像与声音合成接口调用文档
 
-> 本文档提供微信小程序端调用 AI 图像处理相关接口（老照片修复、真人转动漫等）的完整说明。
+> 本文档提供微信小程序端调用 AI 图像与声音合成相关接口（老照片修复、真人转动漫、语音克隆等）的完整说明。
 
 ---
 
@@ -12,9 +12,10 @@
    - [文件上传](#2-文件上传)
    - [发起老照片修复](#3-发起老照片修复)
    - [发起真人转动漫](#4-发起真人转动漫)
-   - [查询任务结果](#5-查询任务结果)
-   - [发起视频文案提取](#6-发起视频文案提取)
-   - [查询视频文案提取结果](#7-查询视频文案提取结果)
+   - [发起语音克隆](#5-发起语音克隆)
+   - [查询任务结果](#6-查询任务结果)
+   - [发起视频文案提取](#7-发起视频文案提取)
+   - [查询视频文案提取结果](#8-查询视频文案提取结果)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -31,6 +32,7 @@
 | 文件上传 | `POST` | `/api/upload` | 上传文件到服务器，返回公网可访问的 URL |
 | 发起老照片修复 | `POST` | `/api/photo/restore` | 提交照片修复任务（异步处理） |
 | 发起真人转动漫 | `POST` | `/api/photo/anime` | 提交真人转动漫任务（异步处理） |
+| 发起语音克隆 | `POST` | `/api/voice/clone` | 提交语音克隆任务（异步处理） |
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
 | 发起视频文案提取 | `POST` | `/api/wechat/transcript/submit` | 提交抖音链接，解析并提取语音文案（异步） |
 | 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
@@ -383,7 +385,79 @@ Content-Type: application/json
 
 ---
 
-### 5. 查询任务结果
+### 5. 发起语音克隆
+
+**POST** `/api/voice/clone`
+
+发起一个语音克隆任务（IndexTTS2）。用户提供一段包含音色的参考音频 URL 和目标合成文本，服务端异步处理并在完成后返回生成的音频。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `openid` | string | ✅ | 微信用户的 openid |
+| `bizCode` | string | ✅ | 业务代码，语音克隆固定为 `voice_clone` |
+| `audioUrl` | string | ✅ | 待克隆音色的参考音频 URL（需公网可访问，可从 `/api/upload` 上传获取） |
+| `text` | string | ✅ | 语音文本内容（即希望克隆声音说出的话） |
+| `emotion` | string | ❌ | 情感描述。默认 `"害羞的"` |
+
+#### 请求示例
+
+```json
+{
+  "openid": "oABC123456789",
+  "bizCode": "voice_clone",
+  "audioUrl": "https://your-oss.com/audio/voice-sample.mp3",
+  "text": "你好呀，很高兴认识你！"
+}
+```
+
+带情感描述的请求示例：
+
+```json
+{
+  "openid": "oABC123456789",
+  "bizCode": "voice_clone",
+  "audioUrl": "https://your-oss.com/audio/voice-sample.mp3",
+  "text": "你好呀，很高兴认识你！",
+  "emotion": "开心的"
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "任务已提交，正在后台处理中，请稍后查询结果",
+  "data": {
+    "taskId": "rh_task_1234567890",
+    "status": "PENDING"
+  }
+}
+```
+
+#### 响应 - 有正在处理的任务 (409)
+
+```json
+{
+  "success": false,
+  "error": "您有一个正在处理中的任务，请等待处理完成后再次提交"
+}
+```
+
+> [!WARNING]
+> **并发限制**：同一用户（openid）+ 同一业务代码（bizCode）只能有一个进行中的任务。必须等上一个任务完成（SUCCESS 或 FAILED）后才能再次提交。
+
+---
+
+### 6. 查询任务结果
 
 **GET** `/api/photo/result`
 
@@ -394,7 +468,7 @@ Content-Type: application/json
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `openid` | string | ✅ | 微信用户的 openid |
-| `bizCode` | string | ✅ | 业务代码，如 `photo_restore` |
+| `bizCode` | string | ✅ | 业务代码，如 `photo_restore`、`anime_convert`、`voice_clone` |
 
 #### 请求示例
 
@@ -446,6 +520,7 @@ GET /api/photo/result?openid=oABC123456789&bizCode=photo_restore
 
 #### 响应 - 任务成功 ✅
 
+##### 1. 图像类任务 (如 photo_restore, anime_convert)
 ```json
 {
   "success": true,
@@ -461,8 +536,26 @@ GET /api/photo/result?openid=oABC123456789&bizCode=photo_restore
 }
 ```
 
+##### 2. 语音类任务 (如 voice_clone)
+```json
+{
+  "success": true,
+  "data": {
+    "status": "SUCCESS",
+    "taskId": "rh_task_1234567890",
+    "message": "任务处理完成",
+    "outputAudioUrl": "https://runninghub.cn/output/cloned-voice.mp3",
+    "inputAudioUrl": "https://your-oss.com/audio/voice-sample.mp3",
+    "outputImageUrl": "https://runninghub.cn/output/cloned-voice.mp3",
+    "inputImageUrl": "https://your-oss.com/audio/voice-sample.mp3",
+    "createdAt": "2026-05-28T00:00:00.000Z",
+    "updatedAt": "2026-05-28T00:01:30.000Z"
+  }
+}
+```
+
 > [!TIP]
-> `outputImageUrl` 是修复后的照片 URL，可以直接用于 `<image>` 标签显示或下载。注意该 URL 可能有时效性，建议获取后及时下载保存。
+> 对于语音克隆任务，会额外返回 `outputAudioUrl` 和 `inputAudioUrl`。`outputImageUrl` 也包含相同的值作为备用。
 
 #### 响应 - 任务失败 ❌
 
@@ -481,7 +574,7 @@ GET /api/photo/result?openid=oABC123456789&bizCode=photo_restore
 
 ---
 
-### 6. 发起视频文案提取
+### 7. 发起视频文案提取
 
 **POST** `/api/wechat/transcript/submit`
 
@@ -559,7 +652,7 @@ Content-Type: application/json
 
 ---
 
-### 7. 查询视频文案提取结果
+### 8. 查询视频文案提取结果
 
 **GET** `/api/wechat/transcript/result`
 

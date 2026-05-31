@@ -17,6 +17,7 @@ import {
 import {
     submitPhotoRestore,
     submitAnimeConvert,
+    submitVoiceClone,
     uploadFileV2,
 } from './runninghub.js';
 
@@ -816,7 +817,74 @@ app.post('/api/photo/anime', async (req, res) => {
 });
 
 // ============================================================
+// API: POST /api/voice/clone — 发起语音克隆任务
+// ============================================================
+app.post('/api/voice/clone', async (req, res) => {
+    try {
+        const { openid, bizCode, audioUrl, text, emotion } = req.body;
+
+        // Validate required fields
+        if (!openid || typeof openid !== 'string') {
+            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'voice_clone') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 voice_clone' });
+        }
+        if (!audioUrl || typeof audioUrl !== 'string') {
+            return res.status(400).json({ success: false, error: 'audioUrl 参数必填' });
+        }
+        if (!text || typeof text !== 'string') {
+            return res.status(400).json({ success: false, error: 'text 参数必填' });
+        }
+
+        // Validate audioUrl format
+        if (!audioUrl.startsWith('http://') && !audioUrl.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'audioUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+
+        console.log(`[VoiceClone] Request from openid=${openid}, bizCode=${bizCode}`);
+
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, 'voice_clone');
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+
+        // Submit voice clone to RunningHub with optional parameters
+        const taskId = await submitVoiceClone(audioUrl, text, {
+            emotion: typeof emotion === 'string' ? emotion : undefined,
+        });
+
+        // Save to database
+        const task = await createDbTask(openid, bizCode, taskId, audioUrl);
+        console.log(`[VoiceClone] Task created: id=${task.id}, taskId=${taskId}`);
+
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    } catch (error: any) {
+        console.error('[VoiceClone] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
 // API: POST /api/wechat/transcript/submit — 发起视频文案提取
+
 // ============================================================
 app.post('/api/wechat/transcript/submit', async (req, res) => {
     try {
@@ -1081,6 +1149,10 @@ app.get('/api/photo/result', async (req, res) => {
                 break;
             case 'SUCCESS':
                 responseData.message = '任务处理完成';
+                if (bizCode === 'voice_clone') {
+                    responseData.outputAudioUrl = task.output_image_url;
+                    responseData.inputAudioUrl = task.input_image_url;
+                }
                 responseData.outputImageUrl = task.output_image_url;
                 responseData.inputImageUrl = task.input_image_url;
                 break;
