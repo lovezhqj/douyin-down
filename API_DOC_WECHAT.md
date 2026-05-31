@@ -13,6 +13,8 @@
    - [发起老照片修复](#3-发起老照片修复)
    - [发起真人转动漫](#4-发起真人转动漫)
    - [查询任务结果](#5-查询任务结果)
+   - [发起视频文案提取](#6-发起视频文案提取)
+   - [查询视频文案提取结果](#7-查询视频文案提取结果)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -30,6 +32,8 @@
 | 发起老照片修复 | `POST` | `/api/photo/restore` | 提交照片修复任务（异步处理） |
 | 发起真人转动漫 | `POST` | `/api/photo/anime` | 提交真人转动漫任务（异步处理） |
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
+| 发起视频文案提取 | `POST` | `/api/wechat/transcript/submit` | 提交抖音链接，解析并提取语音文案（异步） |
+| 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
 
 **Base URL**: `https://douyin-down.fly.dev`
 
@@ -471,6 +475,173 @@ GET /api/photo/result?openid=oABC123456789&bizCode=photo_restore
     "message": "任务处理失败",
     "createdAt": "2026-05-28T00:00:00.000Z",
     "updatedAt": "2026-05-28T00:01:00.000Z"
+  }
+}
+```
+
+---
+
+### 6. 发起视频文案提取
+
+**POST** `/api/wechat/transcript/submit`
+
+发起一个视频文案/脚本提取任务。接受小程序端传递的 `openid` 和 `url`（抖音分享链接）。服务端会先解析抖音链接获取到对应的视频文件，然后自动下载并调用第三方文案提取接口进行异步处理。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `openid` | string | ✅ | 微信用户的 openid |
+| `url` | string | ✅ | 抖音分享视频链接（长链接或短链接） |
+
+#### 请求示例
+
+```json
+{
+  "openid": "oABC123456789",
+  "url": "https://v.douyin.com/xxxxx/"
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "任务已提交，正在后台处理中，请稍后查询结果",
+  "data": {
+    "taskId": "123456",
+    "status": "PENDING"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `taskId` | string | 提取任务的 ID，用于后续查询结果 |
+| `status` | string | 任务初始状态，固定为 `PENDING` |
+
+#### 响应 - 有正在处理的任务 (409)
+
+```json
+{
+  "success": false,
+  "error": "您有一个正在处理中的任务，请等待处理完成后再次提交"
+}
+```
+
+> [!WARNING]
+> **并发限制**：同一用户（openid）只能有一个进行中的视频文案提取任务。必须等上一个任务完成（SUCCESS 或 FAILED）后才能再次提交。
+
+#### 响应 - 解析/参数错误 (400)
+
+```json
+{
+  "success": false,
+  "error": "解析链接失败：无法从链接中提取视频ID，请检查链接格式"
+}
+```
+
+#### 响应 - 服务器/提取服务错误 (500)
+
+```json
+{
+  "success": false,
+  "error": "发起提取任务失败：具体错误信息"
+}
+```
+
+---
+
+### 7. 查询视频文案提取结果
+
+**GET** `/api/wechat/transcript/result`
+
+根据任务 ID 查询视频文案提取的结果，适用于异步轮询。
+
+#### 请求参数 (Query String)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `taskId` | string | ✅ | 发起接口返回的任务 ID |
+
+#### 请求示例
+
+```
+GET /api/wechat/transcript/result?taskId=123456
+```
+
+#### 响应 - 任务排队中
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "PENDING",
+    "taskId": "123456",
+    "message": "任务已提交，正在排队中...",
+    "createdAt": "2026-05-28T00:00:00.000Z",
+    "updatedAt": "2026-05-28T00:00:00.000Z"
+  }
+}
+```
+
+#### 响应 - 任务处理中
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "RUNNING",
+    "taskId": "123456",
+    "message": "任务正在处理中，请稍后再查询",
+    "createdAt": "2026-05-28T00:00:00.000Z",
+    "updatedAt": "2026-05-28T00:00:05.000Z"
+  }
+}
+```
+
+#### 响应 - 任务成功 ✅
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "SUCCESS",
+    "taskId": "123456",
+    "message": "任务处理完成",
+    "text": "今天给大家分享一个非常有用的技巧...",
+    "duration": 45.2,
+    "createdAt": "2026-05-28T00:00:00.000Z",
+    "updatedAt": "2026-05-28T00:00:30.000Z"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | string | 任务状态：`PENDING`（排队中） \| `RUNNING`（处理中） \| `SUCCESS`（成功） \| `FAILED`（失败） |
+| `taskId` | string | 任务 ID |
+| `text` | string | 提取出来的视频文案内容（仅在 SUCCESS 时返回） |
+| `duration` | number | 视频时长，单位为秒（仅在 SUCCESS 时返回） |
+
+#### 响应 - 任务失败 ❌
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "FAILED",
+    "taskId": "123456",
+    "message": "视频时长过长或音频识别失败",
+    "createdAt": "2026-05-28T00:00:00.000Z",
+    "updatedAt": "2026-05-28T00:00:15.000Z"
   }
 }
 ```

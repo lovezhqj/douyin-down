@@ -4,12 +4,14 @@ import * as cheerio from 'cheerio';
 import path from 'path';
 import crypto from 'crypto';
 import multer from 'multer';
+import FormData from 'form-data';
 import {
     initDatabase,
     hasActiveTask,
     createTask as createDbTask,
     updateTaskByTaskId,
     getLatestTask,
+    getTaskByTaskId,
     cleanStaleTasks,
 } from './db.js';
 import {
@@ -309,6 +311,252 @@ app.post('/api/wechat/login', async (req, res) => {
     }
 });
 
+/**
+ * Extract and parse Douyin video URL from input string using multiple strategies.
+ */
+async function getDouyinVideoUrl(url: string): Promise<{ videoSrc: string; coverSrc: string; desc: string }> {
+    // Extract URL from pasted message text
+    let targetUrl = url;
+    const urlMatch = url.match(/(https?:\/\/[^\s]+)/);
+    if (urlMatch) {
+        targetUrl = urlMatch[0];
+    }
+
+    console.log('[Parse] Input URL:', targetUrl);
+
+    // Step 1: Resolve short URL to get video ID
+    const { finalUrl, videoId } = await resolveShortUrl(targetUrl);
+    console.log('[Parse] Final URL:', finalUrl, '| Video ID:', videoId);
+
+    if (!videoId) {
+        throw new Error('无法从链接中提取视频ID，请检查链接格式');
+    }
+
+    let videoSrc = '';
+    let coverSrc = '';
+    let desc = '';
+
+    // ------ Strategy 1: Douyin Web API with msToken ------
+    console.log('[Parse] Strategy 1: Douyin Web API...');
+    try {
+        const msToken = generateMsToken();
+        const ttwid = generateTtwid();
+        const apiUrl = `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${videoId}&aid=6383&cookie_enabled=true&platform=PC&downlink=10`;
+
+        const apiRes = await axios.get(apiUrl, {
+            headers: {
+                'User-Agent': DESKTOP_UA,
+                'Referer': 'https://www.douyin.com/',
+                'Cookie': `msToken=${msToken}; ttwid=${ttwid}; odin_tt=324fb4ea4a89c0c05827e18a1ed9cf9bf8a17f7705fcc793fec935b637867e2a5a9b8168c885554d029919117a18ba69; passport_csrf_token=3571e3e6a307e1c3b29a6de5dd205e69`,
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            },
+            timeout: 15000,
+        });
+
+        const detail = apiRes.data?.aweme_detail;
+        if (detail) {
+            const result = findVideoInObject(detail);
+            if (result && result.videoSrc) {
+                videoSrc = result.videoSrc;
+                coverSrc = result.coverSrc;
+                desc = result.desc;
+                console.log('[Parse] Strategy 1 SUCCESS');
+            }
+        }
+    } catch (e: any) {
+        console.log('[Parse] Strategy 1 failed:', e.message);
+    }
+
+    // ------ Strategy 2: Fetch page with Desktop UA + parse RENDER_DATA ------
+    if (!videoSrc) {
+        console.log('[Parse] Strategy 2: Desktop page RENDER_DATA...');
+        try {
+            const pageUrl = `https://www.douyin.com/video/${videoId}`;
+            const msToken = generateMsToken();
+            const ttwid = generateTtwid();
+
+            const pageRes = await axios.get(pageUrl, {
+                headers: {
+                    'User-Agent': DESKTOP_UA,
+                    'Referer': 'https://www.douyin.com/',
+                    'Cookie': `msToken=${msToken}; ttwid=${ttwid}`,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'zh-CN,zh;q=0.9',
+                },
+                maxRedirects: 5,
+                timeout: 15000,
+            });
+
+            const html = pageRes.data;
+            const $ = cheerio.load(html);
+
+            // Try RENDER_DATA
+            const renderDataEl = $('#RENDER_DATA');
+            if (renderDataEl.length > 0) {
+                const decoded = decodeURIComponent(renderDataEl.html() || '');
+                const renderData = JSON.parse(decoded);
+                const result = findVideoInObject(renderData);
+                if (result && result.videoSrc) {
+                    videoSrc = result.videoSrc;
+                    coverSrc = result.coverSrc;
+                    desc = result.desc;
+                    console.log('[Parse] Strategy 2 (RENDER_DATA) SUCCESS');
+                }
+            }
+
+            // Try _ROUTER_DATA or SSR_HYDRATED_DATA
+            if (!videoSrc) {
+                $('script').each((_i, el) => {
+                    if (videoSrc) return;
+                    const content = $(el).html() || '';
+
+                    // Try various JSON data patterns
+                    for (const pattern of [
+                        /window\._ROUTER_DATA\s*=\s*(\{.+\})\s*;?\s*$/ms,
+                        /self\.__next_f\.push\(\[.*?"(\{.*?\})"\]/s,
+                    ]) {
+                        const match = content.match(pattern);
+                        if (match) {
+                            try {
+                                const data = JSON.parse(match[1]);
+                                const result = findVideoInObject(data);
+                                if (result && result.videoSrc) {
+                                    videoSrc = result.videoSrc;
+                                    coverSrc = result.coverSrc;
+                                    desc = result.desc;
+                                    console.log('[Parse] Strategy 2 (router data) SUCCESS');
+                                    return;
+                                }
+                            } catch { }
+                        }
+                    }
+                });
+            }
+        } catch (e: any) {
+            console.log('[Parse] Strategy 2 failed:', e.message);
+        }
+    }
+
+    // ------ Strategy 3: Mobile page scraping ------
+    if (!videoSrc) {
+        console.log('[Parse] Strategy 3: Mobile page scraping...');
+        try {
+            const mobileUrl = `https://m.douyin.com/share/video/${videoId}`;
+            const pageRes = await axios.get(mobileUrl, {
+                headers: {
+                    'User-Agent': MOBILE_UA,
+                    'Accept': 'text/html,application/xhtml+xml',
+                },
+                maxRedirects: 5,
+                timeout: 15000,
+            });
+
+            const html = pageRes.data;
+            const $ = cheerio.load(html);
+
+            // Search all script tags for video data
+            $('script').each((_i, el) => {
+                if (videoSrc) return;
+                const content = $(el).html() || '';
+
+                // Look for playAddr patterns
+                if (content.includes('playAddr') || content.includes('play_addr') || content.includes('playApi')) {
+                    // Try to extract any video URL
+                    const patterns = [
+                        /"playApi"\s*:\s*"([^"]+)"/,
+                        /"play_addr".*?"url_list"\s*:\s*\["([^"]+)"/,
+                        /"playAddr"\s*:\s*\[\{"src"\s*:\s*"([^"]+)"/,
+                    ];
+                    for (const p of patterns) {
+                        const m = content.match(p);
+                        if (m && m[1]) {
+                            let src = m[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
+                            videoSrc = src.startsWith('//') ? 'https:' + src : src.startsWith('http') ? src : 'https:' + src;
+                            videoSrc = videoSrc.replace('playwm', 'play');
+                            console.log('[Parse] Strategy 3 SUCCESS');
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Generic mp4 search
+            if (!videoSrc) {
+                const mp4Match = html.match(/https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*/);
+                if (mp4Match) {
+                    videoSrc = mp4Match[0];
+                    console.log('[Parse] Strategy 3 (mp4 regex) SUCCESS');
+                }
+            }
+        } catch (e: any) {
+            console.log('[Parse] Strategy 3 failed:', e.message);
+        }
+    }
+
+    // ------ Strategy 4: iesdouyin API ------
+    if (!videoSrc) {
+        console.log('[Parse] Strategy 4: iesdouyin API...');
+        try {
+            const apiRes = await axios.get(
+                `https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids=${videoId}`,
+                {
+                    headers: { 'User-Agent': MOBILE_UA },
+                    timeout: 10000,
+                }
+            );
+            const itemList = apiRes.data?.item_list;
+            if (itemList && itemList.length > 0) {
+                const item = itemList[0];
+                if (item.video?.play_addr?.url_list?.[0]) {
+                    videoSrc = item.video.play_addr.url_list[0].replace('playwm', 'play');
+                    coverSrc = item.video?.cover?.url_list?.[0] || '';
+                    desc = item.desc || '';
+                    console.log('[Parse] Strategy 4 SUCCESS');
+                }
+            }
+        } catch (e: any) {
+            console.log('[Parse] Strategy 4 failed:', e.message);
+        }
+    }
+
+    // ------ Strategy 5: Construct direct CDN URL ------
+    if (!videoSrc) {
+        console.log('[Parse] Strategy 5: Direct CDN construction...');
+        try {
+            // Some Douyin videos can be accessed via a constructed URL
+            const cdnUrl = `https://www.douyin.com/aweme/v1/play/?video_id=${videoId}&ratio=720p&line=0`;
+            const headRes = await axios.head(cdnUrl, {
+                headers: { 'User-Agent': MOBILE_UA },
+                maxRedirects: 3,
+                timeout: 10000,
+            });
+            if (headRes.status === 200) {
+                videoSrc = cdnUrl;
+                console.log('[Parse] Strategy 5 SUCCESS');
+            }
+        } catch (e: any) {
+            console.log('[Parse] Strategy 5 failed:', e.message);
+        }
+    }
+
+    // If all strategies fail
+    if (!videoSrc) {
+        console.log('[Parse] All strategies failed for video ID:', videoId);
+        throw new Error('解析失败，所有策略均无法获取视频地址。可能原因：1) 视频已删除 2) 服务器IP被限制 3) 链接格式不支持');
+    }
+
+    // Normalize domains for accessibility from overseas servers
+    videoSrc = normalizeVideoUrl(videoSrc);
+    console.log('[Parse] Final video URL (normalized):', videoSrc.substring(0, 120) + '...');
+
+    return {
+        videoSrc,
+        coverSrc,
+        desc: desc || '抖音视频',
+    };
+}
+
 // ============================================================
 // API: POST /api/parse — 解析抖音视频链接
 // ============================================================
@@ -319,250 +567,14 @@ app.post('/api/parse', async (req, res) => {
             return res.status(400).json({ error: 'URL is required' });
         }
 
-        // Extract URL from pasted message text
-        let targetUrl = url;
-        const urlMatch = url.match(/(https?:\/\/[^\s]+)/);
-        if (urlMatch) {
-            targetUrl = urlMatch[0];
-        }
-
-        console.log('[Parse] Input URL:', targetUrl);
-
-        // Step 1: Resolve short URL to get video ID
-        const { finalUrl, videoId } = await resolveShortUrl(targetUrl);
-        console.log('[Parse] Final URL:', finalUrl, '| Video ID:', videoId);
-
-        if (!videoId) {
-            return res.status(400).json({ error: '无法从链接中提取视频ID，请检查链接格式' });
-        }
-
-        let videoSrc = '';
-        let coverSrc = '';
-        let desc = '';
-
-        // ------ Strategy 1: Douyin Web API with msToken ------
-        console.log('[Parse] Strategy 1: Douyin Web API...');
-        try {
-            const msToken = generateMsToken();
-            const ttwid = generateTtwid();
-            const apiUrl = `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${videoId}&aid=6383&cookie_enabled=true&platform=PC&downlink=10`;
-
-            const apiRes = await axios.get(apiUrl, {
-                headers: {
-                    'User-Agent': DESKTOP_UA,
-                    'Referer': 'https://www.douyin.com/',
-                    'Cookie': `msToken=${msToken}; ttwid=${ttwid}; odin_tt=324fb4ea4a89c0c05827e18a1ed9cf9bf8a17f7705fcc793fec935b637867e2a5a9b8168c885554d029919117a18ba69; passport_csrf_token=3571e3e6a307e1c3b29a6de5dd205e69`,
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                },
-                timeout: 15000,
-            });
-
-            const detail = apiRes.data?.aweme_detail;
-            if (detail) {
-                const result = findVideoInObject(detail);
-                if (result && result.videoSrc) {
-                    videoSrc = result.videoSrc;
-                    coverSrc = result.coverSrc;
-                    desc = result.desc;
-                    console.log('[Parse] Strategy 1 SUCCESS');
-                }
-            }
-        } catch (e: any) {
-            console.log('[Parse] Strategy 1 failed:', e.message);
-        }
-
-        // ------ Strategy 2: Fetch page with Desktop UA + parse RENDER_DATA ------
-        if (!videoSrc) {
-            console.log('[Parse] Strategy 2: Desktop page RENDER_DATA...');
-            try {
-                const pageUrl = `https://www.douyin.com/video/${videoId}`;
-                const msToken = generateMsToken();
-                const ttwid = generateTtwid();
-
-                const pageRes = await axios.get(pageUrl, {
-                    headers: {
-                        'User-Agent': DESKTOP_UA,
-                        'Referer': 'https://www.douyin.com/',
-                        'Cookie': `msToken=${msToken}; ttwid=${ttwid}`,
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'zh-CN,zh;q=0.9',
-                    },
-                    maxRedirects: 5,
-                    timeout: 15000,
-                });
-
-                const html = pageRes.data;
-                const $ = cheerio.load(html);
-
-                // Try RENDER_DATA
-                const renderDataEl = $('#RENDER_DATA');
-                if (renderDataEl.length > 0) {
-                    const decoded = decodeURIComponent(renderDataEl.html() || '');
-                    const renderData = JSON.parse(decoded);
-                    const result = findVideoInObject(renderData);
-                    if (result && result.videoSrc) {
-                        videoSrc = result.videoSrc;
-                        coverSrc = result.coverSrc;
-                        desc = result.desc;
-                        console.log('[Parse] Strategy 2 (RENDER_DATA) SUCCESS');
-                    }
-                }
-
-                // Try _ROUTER_DATA or SSR_HYDRATED_DATA
-                if (!videoSrc) {
-                    $('script').each((_i, el) => {
-                        if (videoSrc) return;
-                        const content = $(el).html() || '';
-
-                        // Try various JSON data patterns
-                        for (const pattern of [
-                            /window\._ROUTER_DATA\s*=\s*(\{.+\})\s*;?\s*$/ms,
-                            /self\.__next_f\.push\(\[.*?"(\{.*?\})"\]/s,
-                        ]) {
-                            const match = content.match(pattern);
-                            if (match) {
-                                try {
-                                    const data = JSON.parse(match[1]);
-                                    const result = findVideoInObject(data);
-                                    if (result && result.videoSrc) {
-                                        videoSrc = result.videoSrc;
-                                        coverSrc = result.coverSrc;
-                                        desc = result.desc;
-                                        console.log('[Parse] Strategy 2 (router data) SUCCESS');
-                                        return;
-                                    }
-                                } catch { }
-                            }
-                        }
-                    });
-                }
-            } catch (e: any) {
-                console.log('[Parse] Strategy 2 failed:', e.message);
-            }
-        }
-
-        // ------ Strategy 3: Mobile page scraping ------
-        if (!videoSrc) {
-            console.log('[Parse] Strategy 3: Mobile page scraping...');
-            try {
-                const mobileUrl = `https://m.douyin.com/share/video/${videoId}`;
-                const pageRes = await axios.get(mobileUrl, {
-                    headers: {
-                        'User-Agent': MOBILE_UA,
-                        'Accept': 'text/html,application/xhtml+xml',
-                    },
-                    maxRedirects: 5,
-                    timeout: 15000,
-                });
-
-                const html = pageRes.data;
-                const $ = cheerio.load(html);
-
-                // Search all script tags for video data
-                $('script').each((_i, el) => {
-                    if (videoSrc) return;
-                    const content = $(el).html() || '';
-
-                    // Look for playAddr patterns
-                    if (content.includes('playAddr') || content.includes('play_addr') || content.includes('playApi')) {
-                        // Try to extract any video URL
-                        const patterns = [
-                            /"playApi"\s*:\s*"([^"]+)"/,
-                            /"play_addr".*?"url_list"\s*:\s*\["([^"]+)"/,
-                            /"playAddr"\s*:\s*\[\{"src"\s*:\s*"([^"]+)"/,
-                        ];
-                        for (const p of patterns) {
-                            const m = content.match(p);
-                            if (m && m[1]) {
-                                let src = m[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
-                                videoSrc = src.startsWith('//') ? 'https:' + src : src.startsWith('http') ? src : 'https:' + src;
-                                videoSrc = videoSrc.replace('playwm', 'play');
-                                console.log('[Parse] Strategy 3 SUCCESS');
-                                break;
-                            }
-                        }
-                    }
-                });
-
-                // Generic mp4 search
-                if (!videoSrc) {
-                    const mp4Match = html.match(/https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*/);
-                    if (mp4Match) {
-                        videoSrc = mp4Match[0];
-                        console.log('[Parse] Strategy 3 (mp4 regex) SUCCESS');
-                    }
-                }
-            } catch (e: any) {
-                console.log('[Parse] Strategy 3 failed:', e.message);
-            }
-        }
-
-        // ------ Strategy 4: iesdouyin API ------
-        if (!videoSrc) {
-            console.log('[Parse] Strategy 4: iesdouyin API...');
-            try {
-                const apiRes = await axios.get(
-                    `https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids=${videoId}`,
-                    {
-                        headers: { 'User-Agent': MOBILE_UA },
-                        timeout: 10000,
-                    }
-                );
-                const itemList = apiRes.data?.item_list;
-                if (itemList && itemList.length > 0) {
-                    const item = itemList[0];
-                    if (item.video?.play_addr?.url_list?.[0]) {
-                        videoSrc = item.video.play_addr.url_list[0].replace('playwm', 'play');
-                        coverSrc = item.video?.cover?.url_list?.[0] || '';
-                        desc = item.desc || '';
-                        console.log('[Parse] Strategy 4 SUCCESS');
-                    }
-                }
-            } catch (e: any) {
-                console.log('[Parse] Strategy 4 failed:', e.message);
-            }
-        }
-
-        // ------ Strategy 5: Construct direct CDN URL ------
-        if (!videoSrc) {
-            console.log('[Parse] Strategy 5: Direct CDN construction...');
-            try {
-                // Some Douyin videos can be accessed via a constructed URL
-                const cdnUrl = `https://www.douyin.com/aweme/v1/play/?video_id=${videoId}&ratio=720p&line=0`;
-                const headRes = await axios.head(cdnUrl, {
-                    headers: { 'User-Agent': MOBILE_UA },
-                    maxRedirects: 3,
-                    timeout: 10000,
-                });
-                if (headRes.status === 200) {
-                    videoSrc = cdnUrl;
-                    console.log('[Parse] Strategy 5 SUCCESS');
-                }
-            } catch (e: any) {
-                console.log('[Parse] Strategy 5 failed:', e.message);
-            }
-        }
-
-        // If all strategies fail
-        if (!videoSrc) {
-            console.log('[Parse] All strategies failed for video ID:', videoId);
-            return res.json({
-                success: false,
-                error: '解析失败，所有策略均无法获取视频地址。可能原因：1) 视频已删除 2) 服务器IP被限制 3) 链接格式不支持',
-            });
-        }
-
-        // Normalize domains for accessibility from overseas servers
-        videoSrc = normalizeVideoUrl(videoSrc);
-        console.log('[Parse] Final video URL (normalized):', videoSrc.substring(0, 120) + '...');
+        const result = await getDouyinVideoUrl(url);
 
         res.json({
             success: true,
             data: {
-                url: videoSrc,
-                cover: coverSrc,
-                desc: desc || '抖音视频',
+                url: result.videoSrc,
+                cover: result.coverSrc,
+                desc: result.desc,
             },
         });
     } catch (error: any) {
@@ -804,6 +816,131 @@ app.post('/api/photo/anime', async (req, res) => {
 });
 
 // ============================================================
+// API: POST /api/wechat/transcript/submit — 发起视频文案提取
+// ============================================================
+app.post('/api/wechat/transcript/submit', async (req, res) => {
+    try {
+        const { openid, url } = req.body;
+
+        // Validate required fields
+        if (!openid || typeof openid !== 'string') {
+            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        }
+        if (!url || typeof url !== 'string') {
+            return res.status(400).json({ success: false, error: 'url 参数必填（抖音视频链接）' });
+        }
+
+        console.log(`[TranscriptSubmit] Request from openid=${openid}, url=${url}`);
+
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, 'video_transcript');
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+
+        // 1. Parse Douyin URL to get normalized video link
+        let parsedResult;
+        try {
+            parsedResult = await getDouyinVideoUrl(url);
+        } catch (err: any) {
+            console.error('[TranscriptSubmit] Parse Douyin URL failed:', err.message);
+            return res.status(400).json({
+                success: false,
+                error: '解析链接失败：' + err.message,
+            });
+        }
+
+        // 2. Download video file to memory buffer
+        console.log('[TranscriptSubmit] Downloading video:', parsedResult.videoSrc.substring(0, 100) + '...');
+        let videoBuffer: Buffer;
+        try {
+            const downloadRes = await axios.get(parsedResult.videoSrc, {
+                responseType: 'arraybuffer',
+                headers: {
+                    'User-Agent': MOBILE_UA,
+                    'Referer': 'https://www.douyin.com/',
+                },
+                timeout: 120000,
+                maxRedirects: 10,
+            });
+            videoBuffer = Buffer.from(downloadRes.data);
+            console.log(`[TranscriptSubmit] Downloaded video size: ${videoBuffer.length} bytes`);
+        } catch (err: any) {
+            console.error('[TranscriptSubmit] Download video failed:', err.message);
+            return res.status(500).json({
+                success: false,
+                error: '下载视频失败：' + (err.message || '网络连接超时'),
+            });
+        }
+
+        // 3. Upload video buffer to VoiceText AI (async mode)
+        console.log('[TranscriptSubmit] Uploading video to VoiceText AI...');
+        const apiKey = process.env.VOICETEXT_API_KEY || 'vtt_8d64f6c85f80d101f295fd587ef0f1a46e74105ed84ea529';
+        
+        let voiceTextTaskId: string;
+        try {
+            const form = new FormData();
+            form.append('file', videoBuffer, {
+                filename: 'douyin_video.mp4',
+                contentType: 'video/mp4',
+            });
+            form.append('async', 'true');
+
+            const uploadRes = await axios.post('https://video.kkdmx.com/openapi/v1/transcript/upload', form, {
+                headers: {
+                    ...form.getHeaders(),
+                    'X-API-Key': apiKey,
+                },
+                timeout: 60000,
+            });
+
+            if (uploadRes.data && uploadRes.data.success) {
+                voiceTextTaskId = uploadRes.data.data.id.toString();
+                console.log('[TranscriptSubmit] VoiceText upload success. TaskID:', voiceTextTaskId);
+            } else {
+                const errMsg = uploadRes.data?.error || '服务器返回错误';
+                console.error('[TranscriptSubmit] VoiceText upload failed:', errMsg);
+                return res.status(500).json({
+                    success: false,
+                    error: '提取任务提交失败：' + errMsg,
+                });
+            }
+        } catch (err: any) {
+            const errMsg = err.response?.data?.error || err.message;
+            console.error('[TranscriptSubmit] VoiceText upload network error:', errMsg);
+            return res.status(500).json({
+                success: false,
+                error: '发起提取任务失败：' + errMsg,
+            });
+        }
+
+        // 4. Save task record in our database
+        // We reuse createDbTask with bizCode = 'video_transcript'
+        // input_image_url will store the user's input URL (抖音链接)
+        const task = await createDbTask(openid, 'video_transcript', voiceTextTaskId, url);
+        console.log(`[TranscriptSubmit] Task saved in DB. ID: ${task.id}, TaskID: ${voiceTextTaskId}`);
+
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: voiceTextTaskId,
+                status: 'PENDING',
+            },
+        });
+    } catch (error: any) {
+        console.error('[TranscriptSubmit] Unhandled error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
 // API: POST /api/webhook/runninghub — 接收 RunningHub 回调
 // ============================================================
 app.post('/api/webhook/runninghub', async (req, res) => {
@@ -960,6 +1097,168 @@ app.get('/api/photo/result', async (req, res) => {
         });
     } catch (error: any) {
         console.error('[Result] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '查询失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
+// API: GET /api/wechat/transcript/result — 查询视频文案提取结果
+// ============================================================
+app.get('/api/wechat/transcript/result', async (req, res) => {
+    try {
+        const { taskId } = req.query;
+
+        if (!taskId || typeof taskId !== 'string') {
+            return res.status(400).json({ success: false, error: 'taskId 参数必填' });
+        }
+
+        console.log(`[TranscriptResult] Query for taskId=${taskId}`);
+
+        // 1. Fetch task from our database first
+        let task = await getTaskByTaskId(taskId);
+
+        if (!task) {
+            // Fallback: If not in DB, try to query VoiceText AI directly
+            console.log(`[TranscriptResult] Task ${taskId} not found in DB. Trying direct VoiceText query...`);
+            const apiKey = process.env.VOICETEXT_API_KEY || 'vtt_8d64f6c85f80d101f295fd587ef0f1a46e74105ed84ea529';
+            try {
+                const response = await axios.get(`https://video.kkdmx.com/openapi/v1/transcript/${taskId}`, {
+                    headers: { 'X-API-Key': apiKey },
+                    timeout: 15000,
+                });
+                
+                if (response.data && response.data.success) {
+                    const data = response.data.data;
+                    const statusMap: Record<string, string> = {
+                        'completed': 'SUCCESS',
+                        'failed': 'FAILED',
+                        'processing': 'RUNNING',
+                    };
+                    const status = statusMap[data.status] || 'RUNNING';
+                    
+                    const responseData: any = {
+                        status: status,
+                        taskId: taskId,
+                        message: status === 'SUCCESS' ? '任务处理完成' : status === 'FAILED' ? (data.error_message || '任务处理失败') : '任务正在处理中，请稍后再查询',
+                    };
+                    if (status === 'SUCCESS') {
+                        responseData.text = data.text;
+                        responseData.duration = data.duration;
+                    }
+                    return res.json({
+                        success: true,
+                        data: responseData,
+                    });
+                } else {
+                    return res.status(404).json({
+                        success: false,
+                        error: '没有找到相关任务记录',
+                    });
+                }
+            } catch (err: any) {
+                console.error('[TranscriptResult] Direct VoiceText query failed:', err.message);
+                return res.status(404).json({
+                    success: false,
+                    error: '没有找到相关任务记录',
+                });
+            }
+        }
+
+        // 2. If task status is already SUCCESS or FAILED, return the stored result immediately
+        if (task.status === 'SUCCESS' || task.status === 'FAILED') {
+            const responseData: any = {
+                status: task.status,
+                taskId: task.task_id,
+                createdAt: task.created_at,
+                updatedAt: task.updated_at,
+                message: task.status === 'SUCCESS' ? '任务处理完成' : (task.error_message || '任务处理失败'),
+            };
+            if (task.status === 'SUCCESS') {
+                responseData.text = task.output_data?.text || '';
+                responseData.duration = task.output_data?.duration || 0;
+            }
+            return res.json({
+                success: true,
+                data: responseData,
+            });
+        }
+
+        // 3. If status is PENDING or RUNNING, poll the third-party API
+        console.log(`[TranscriptResult] Task ${taskId} is ${task.status} in DB. Polling VoiceText API...`);
+        const apiKey = process.env.VOICETEXT_API_KEY || 'vtt_8d64f6c85f80d101f295fd587ef0f1a46e74105ed84ea529';
+        
+        try {
+            const response = await axios.get(`https://video.kkdmx.com/openapi/v1/transcript/${taskId}`, {
+                headers: { 'X-API-Key': apiKey },
+                timeout: 15000,
+            });
+
+            if (response.data && response.data.success) {
+                const data = response.data.data;
+                let updatedStatus = task.status;
+                let errorMessage: string | null = null;
+
+                if (data.status === 'completed') {
+                    updatedStatus = 'SUCCESS';
+                } else if (data.status === 'failed') {
+                    updatedStatus = 'FAILED';
+                    errorMessage = data.error_message || '提取文案失败';
+                } else if (data.status === 'processing') {
+                    updatedStatus = 'RUNNING';
+                }
+
+                // Update database
+                const updatedTask = await updateTaskByTaskId(taskId, updatedStatus, data, null, errorMessage);
+                const currentTask = updatedTask || task;
+
+                const responseData: any = {
+                    status: currentTask.status,
+                    taskId: currentTask.task_id,
+                    createdAt: currentTask.created_at,
+                    updatedAt: currentTask.updated_at,
+                    message: currentTask.status === 'SUCCESS' ? '任务处理完成' : currentTask.status === 'FAILED' ? (currentTask.error_message || '任务处理失败') : '任务正在处理中，请稍后再查询',
+                };
+                if (currentTask.status === 'SUCCESS') {
+                    responseData.text = currentTask.output_data?.text || '';
+                    responseData.duration = currentTask.output_data?.duration || 0;
+                }
+
+                res.json({
+                    success: true,
+                    data: responseData,
+                });
+            } else {
+                console.warn('[TranscriptResult] VoiceText API returned success=false:', response.data);
+                res.json({
+                    success: true,
+                    data: {
+                        status: task.status,
+                        taskId: task.task_id,
+                        createdAt: task.created_at,
+                        updatedAt: task.updated_at,
+                        message: '查询中...',
+                    },
+                });
+            }
+        } catch (err: any) {
+            console.error('[TranscriptResult] Polling VoiceText API error:', err.message);
+            // On API query error, fallback to returning the stored DB status
+            res.json({
+                success: true,
+                data: {
+                    status: task.status,
+                    taskId: task.task_id,
+                    createdAt: task.created_at,
+                    updatedAt: task.updated_at,
+                    message: '查询服务暂时不可用，返回本地状态：' + (task.status === 'PENDING' ? '排队中' : '处理中'),
+                },
+            });
+        }
+    } catch (error: any) {
+        console.error('[TranscriptResult] Unhandled error:', error.message);
         res.status(500).json({
             success: false,
             error: '查询失败：' + (error.message || '未知错误'),
