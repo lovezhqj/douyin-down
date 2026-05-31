@@ -194,6 +194,52 @@ const upload = multer({
         }
     },
 });
+/**
+ * Helper to exchange WeChat code for openid and optional unionid.
+ */
+async function getOpenIdFromCode(code) {
+    const appId = process.env.WECHAT_APPID;
+    const appSecret = process.env.WECHAT_SECRET;
+    if (!appId || !appSecret) {
+        console.error('[Wechat] WECHAT_APPID or WECHAT_SECRET not configured');
+        throw new Error('服务端微信配置缺失，请联系管理员');
+    }
+    console.log('[Wechat] Exchanging code for openid...');
+    const wxRes = await axios.get('https://api.weixin.qq.com/sns/jscode2session', {
+        params: {
+            appid: appId,
+            secret: appSecret,
+            js_code: code,
+            grant_type: 'authorization_code',
+        },
+        timeout: 10000,
+    });
+    const wxData = wxRes.data;
+    console.log('[Wechat] WeChat response:', JSON.stringify({
+        openid: wxData.openid ? '***' : undefined,
+        errcode: wxData.errcode,
+        errmsg: wxData.errmsg,
+    }));
+    if (wxData.errcode && wxData.errcode !== 0) {
+        const errorMessages = {
+            40029: 'code 无效或已过期，请重新调用 wx.login',
+            45011: '请求频率限制，请稍后再试',
+            40226: '高风险等级用户，小程序登录拦截',
+            [-1]: '微信系统繁忙，请稍后再试',
+        };
+        const msg = errorMessages[wxData.errcode] || wxData.errmsg || '微信登录失败';
+        const err = new Error(msg);
+        err.errcode = wxData.errcode;
+        throw err;
+    }
+    if (!wxData.openid) {
+        throw new Error('微信登录异常：未返回 openid');
+    }
+    return {
+        openid: wxData.openid,
+        unionid: wxData.unionid,
+    };
+}
 // ============================================================
 // API: POST /api/wechat/login — 微信小程序登录（code 换取 openid）
 // ============================================================
@@ -203,53 +249,7 @@ app.post('/api/wechat/login', async (req, res) => {
         if (!code || typeof code !== 'string') {
             return res.status(400).json({ success: false, error: 'code 参数必填' });
         }
-        const appId = process.env.WECHAT_APPID;
-        const appSecret = process.env.WECHAT_SECRET;
-        if (!appId || !appSecret) {
-            console.error('[WechatLogin] WECHAT_APPID or WECHAT_SECRET not configured');
-            return res.status(500).json({
-                success: false,
-                error: '服务端微信配置缺失，请联系管理员',
-            });
-        }
-        console.log('[WechatLogin] Exchanging code for openid...');
-        // Call WeChat jscode2session API
-        const wxRes = await axios.get('https://api.weixin.qq.com/sns/jscode2session', {
-            params: {
-                appid: appId,
-                secret: appSecret,
-                js_code: code,
-                grant_type: 'authorization_code',
-            },
-            timeout: 10000,
-        });
-        const wxData = wxRes.data;
-        console.log('[WechatLogin] WeChat response:', JSON.stringify({
-            openid: wxData.openid ? '***' : undefined,
-            errcode: wxData.errcode,
-            errmsg: wxData.errmsg,
-        }));
-        // WeChat returns errcode on failure (0 or absent on success)
-        if (wxData.errcode && wxData.errcode !== 0) {
-            const errorMessages = {
-                40029: 'code 无效或已过期，请重新调用 wx.login',
-                45011: '请求频率限制，请稍后再试',
-                40226: '高风险等级用户，小程序登录拦截',
-                [-1]: '微信系统繁忙，请稍后再试',
-            };
-            const msg = errorMessages[wxData.errcode] || wxData.errmsg || '微信登录失败';
-            return res.status(400).json({
-                success: false,
-                error: msg,
-                errcode: wxData.errcode,
-            });
-        }
-        if (!wxData.openid) {
-            return res.status(500).json({
-                success: false,
-                error: '微信登录异常：未返回 openid',
-            });
-        }
+        const wxData = await getOpenIdFromCode(code);
         // Return openid (and optionally unionid if available)
         // NOTE: session_key MUST NOT be sent to the client for security reasons
         const responseData = {
@@ -266,9 +266,11 @@ app.post('/api/wechat/login', async (req, res) => {
     }
     catch (error) {
         console.error('[WechatLogin] Error:', error.message);
-        res.status(500).json({
+        const status = error.errcode ? 400 : 500;
+        res.status(status).json({
             success: false,
             error: '微信登录失败：' + (error.message || '未知错误'),
+            errcode: error.errcode,
         });
     }
 });
@@ -626,10 +628,10 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 // ============================================================
 app.post('/api/photo/restore', async (req, res) => {
     try {
-        const { openid, bizCode, imageUrl, cnStrength, outputSize } = req.body;
+        const { code, bizCode, imageUrl, cnStrength, outputSize } = req.body;
         // Validate required fields
-        if (!openid || typeof openid !== 'string') {
-            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
         }
         if (!bizCode || typeof bizCode !== 'string') {
             return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
@@ -640,6 +642,15 @@ app.post('/api/photo/restore', async (req, res) => {
         // Validate imageUrl format
         if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
             return res.status(400).json({ success: false, error: 'imageUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
         }
         console.log(`[PhotoRestore] Request from openid=${openid}, bizCode=${bizCode}`);
         // Check for active tasks — concurrent control
@@ -680,10 +691,10 @@ app.post('/api/photo/restore', async (req, res) => {
 // ============================================================
 app.post('/api/photo/anime', async (req, res) => {
     try {
-        const { openid, bizCode, imageUrl, prompt } = req.body;
+        const { code, bizCode, imageUrl, prompt } = req.body;
         // Validate required fields
-        if (!openid || typeof openid !== 'string') {
-            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
         }
         if (!bizCode || typeof bizCode !== 'string') {
             return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
@@ -694,6 +705,15 @@ app.post('/api/photo/anime', async (req, res) => {
         // Validate imageUrl format
         if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
             return res.status(400).json({ success: false, error: 'imageUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
         }
         console.log(`[AnimeConvert] Request from openid=${openid}, bizCode=${bizCode}`);
         // Check for active tasks — concurrent control
@@ -733,10 +753,10 @@ app.post('/api/photo/anime', async (req, res) => {
 // ============================================================
 app.post('/api/photo/text_to_image', async (req, res) => {
     try {
-        const { openid, bizCode, prompt, aspectRatio, resolution, seed, skipError } = req.body;
+        const { code, bizCode, prompt, aspectRatio, resolution, seed, skipError } = req.body;
         // Validate required fields
-        if (!openid || typeof openid !== 'string') {
-            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
         }
         if (!bizCode || typeof bizCode !== 'string') {
             return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
@@ -746,6 +766,15 @@ app.post('/api/photo/text_to_image', async (req, res) => {
         }
         if (!prompt || typeof prompt !== 'string') {
             return res.status(400).json({ success: false, error: 'prompt 参数必填且必须为非空字符串' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
         }
         console.log(`[TextToImage] Request from openid=${openid}, bizCode=${bizCode}`);
         // Check for active tasks — concurrent control
@@ -789,10 +818,10 @@ app.post('/api/photo/text_to_image', async (req, res) => {
 // ============================================================
 app.post('/api/voice/clone', async (req, res) => {
     try {
-        const { openid, bizCode, audioUrl, text, emotion, topK, topP, temperature, numBeams, maxMelTokens, maxTextTokensPerSentence, emoAlpha, useEmoText, useRandom, } = req.body;
+        const { code, bizCode, audioUrl, text, emotion, topK, topP, temperature, numBeams, maxMelTokens, maxTextTokensPerSentence, emoAlpha, useEmoText, useRandom, } = req.body;
         // Validate required fields
-        if (!openid || typeof openid !== 'string') {
-            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
         }
         if (!bizCode || typeof bizCode !== 'string') {
             return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
@@ -809,6 +838,15 @@ app.post('/api/voice/clone', async (req, res) => {
         // Validate audioUrl format
         if (!audioUrl.startsWith('http://') && !audioUrl.startsWith('https://')) {
             return res.status(400).json({ success: false, error: 'audioUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
         }
         console.log(`[VoiceClone] Request from openid=${openid}, bizCode=${bizCode}`);
         // Check for active tasks — concurrent control
@@ -857,13 +895,22 @@ app.post('/api/voice/clone', async (req, res) => {
 // ============================================================
 app.post('/api/wechat/transcript/submit', async (req, res) => {
     try {
-        const { openid, url } = req.body;
+        const { code, url } = req.body;
         // Validate required fields
-        if (!openid || typeof openid !== 'string') {
-            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
         }
         if (!url || typeof url !== 'string') {
             return res.status(400).json({ success: false, error: 'url 参数必填（抖音视频链接）' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
         }
         console.log(`[TranscriptSubmit] Request from openid=${openid}, url=${url}`);
         // Check for active tasks — concurrent control
@@ -1062,13 +1109,22 @@ app.post('/api/webhook/runninghub', async (req, res) => {
 // ============================================================
 app.get('/api/photo/result', async (req, res) => {
     try {
-        const { openid, bizCode } = req.query;
+        const { code, bizCode } = req.query;
         // Validate required fields
-        if (!openid || typeof openid !== 'string') {
-            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
         }
         if (!bizCode || typeof bizCode !== 'string') {
             return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
         }
         console.log(`[Result] Query from openid=${openid}, bizCode=${bizCode}`);
         // Get latest task
