@@ -821,7 +821,22 @@ app.post('/api/photo/anime', async (req, res) => {
 // ============================================================
 app.post('/api/voice/clone', async (req, res) => {
     try {
-        const { openid, bizCode, audioUrl, text, emotion } = req.body;
+        const {
+            openid,
+            bizCode,
+            audioUrl,
+            text,
+            emotion,
+            topK,
+            topP,
+            temperature,
+            numBeams,
+            maxMelTokens,
+            maxTextTokensPerSentence,
+            emoAlpha,
+            useEmoText,
+            useRandom,
+        } = req.body;
 
         // Validate required fields
         if (!openid || typeof openid !== 'string') {
@@ -859,6 +874,15 @@ app.post('/api/voice/clone', async (req, res) => {
         // Submit voice clone to RunningHub with optional parameters
         const taskId = await submitVoiceClone(audioUrl, text, {
             emotion: typeof emotion === 'string' ? emotion : undefined,
+            topK: typeof topK === 'number' ? topK : undefined,
+            topP: typeof topP === 'number' ? topP : undefined,
+            temperature: typeof temperature === 'number' ? temperature : undefined,
+            numBeams: typeof numBeams === 'number' ? numBeams : undefined,
+            maxMelTokens: typeof maxMelTokens === 'number' ? maxMelTokens : undefined,
+            maxTextTokensPerSentence: typeof maxTextTokensPerSentence === 'number' ? maxTextTokensPerSentence : undefined,
+            emoAlpha: typeof emoAlpha === 'number' ? emoAlpha : undefined,
+            useEmoText: typeof useEmoText === 'boolean' ? useEmoText : undefined,
+            useRandom: typeof useRandom === 'boolean' ? useRandom : undefined,
         });
 
         // Save to database

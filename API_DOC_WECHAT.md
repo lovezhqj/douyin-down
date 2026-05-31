@@ -406,6 +406,15 @@ Content-Type: application/json
 | `audioUrl` | string | ✅ | 待克隆音色的参考音频 URL（需公网可访问，可从 `/api/upload` 上传获取） |
 | `text` | string | ✅ | 语音文本内容（即希望克隆声音说出的话） |
 | `emotion` | string | ❌ | 情感描述。默认 `"害羞的"` |
+| `topK` | number | ❌ | top_k。默认 `30` |
+| `topP` | number | ❌ | top_p。默认 `0.8` |
+| `temperature` | number | ❌ | temperature。默认 `0.8` |
+| `numBeams` | number | ❌ | num_beams。默认 `3` |
+| `maxMelTokens` | number | ❌ | max_mel_tokens。默认 `1500` |
+| `maxTextTokensPerSentence` | number | ❌ | 单句最大文本 token 数。默认 `120` |
+| `emoAlpha` | number | ❌ | emo_alpha 情感权重系数。默认 `1` |
+| `useEmoText` | boolean | ❌ | 是否使用情感描述。默认 `true` |
+| `useRandom` | boolean | ❌ | 是否使用随机，默认 `false` |
 
 #### 请求示例
 
@@ -418,7 +427,7 @@ Content-Type: application/json
 }
 ```
 
-带情感描述的请求示例：
+带高级配置参数的请求示例：
 
 ```json
 {
@@ -426,7 +435,9 @@ Content-Type: application/json
   "bizCode": "voice_clone",
   "audioUrl": "https://your-oss.com/audio/voice-sample.mp3",
   "text": "你好呀，很高兴认识你！",
-  "emotion": "开心的"
+  "emotion": "开心的",
+  "temperature": 0.7,
+  "topP": 0.85
 }
 ```
 

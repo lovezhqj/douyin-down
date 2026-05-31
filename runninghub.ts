@@ -521,10 +521,14 @@ export async function uploadAudio(audioUrl: string): Promise<UploadResult> {
  * Node 9 (LoadAudio)        — fieldName: "audio"  — 上传的克隆参考音频
  * Node 6 (Text Multiline)   — fieldName: "text"   — 语音文本内容
  * Node 17 (CR Text)         — fieldName: "text"   — 情感描述（默认："害羞的"）
+ * Node 1 (IndexTTS2Run)     — Model configurations (top_k, top_p, etc.)
  */
 export function getVoiceCloneConfig() {
-    // The webapp/workflow ID for Voice Cloning — IndexTTS2
-    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_VOICE_CLONE || '1965684535247650818';
+    // The webapp/workflow ID for Voice Cloning — IndexTTS2 ComfyUI workflow ID
+    const workflowId = 
+        process.env.RUNNINGHUB_WORKFLOW_ID_VOICE_CLONE || 
+        process.env.RUNNINGHUB_WEBAPP_ID_VOICE_CLONE || 
+        '1965585853093396482';
 
     return {
         workflowId,
@@ -544,12 +548,30 @@ export function getVoiceCloneConfig() {
 export interface VoiceCloneOptions {
     /** Emotion description for the cloned voice, e.g. "害羞的", "开心", "愤怒". Default: "害羞的" */
     emotion?: string;
+    /** top_k parameter (default: 30) */
+    topK?: number;
+    /** top_p parameter (default: 0.8) */
+    topP?: number;
+    /** temperature parameter (default: 0.8) */
+    temperature?: number;
+    /** num_beams parameter (default: 3) */
+    numBeams?: number;
+    /** max_mel_tokens parameter (default: 1500) */
+    maxMelTokens?: number;
+    /** max_text_tokens_per_sentence parameter (default: 120) */
+    maxTextTokensPerSentence?: number;
+    /** emo_alpha parameter (default: 1) */
+    emoAlpha?: number;
+    /** use_emo_text parameter (default: true) */
+    useEmoText?: boolean;
+    /** use_random parameter (default: false) */
+    useRandom?: boolean;
 }
 
 /**
  * Execute the full voice cloning flow:
  * 1. Upload reference audio to RunningHub
- * 2. Create task with the uploaded audio, text, and optional emotion
+ * 2. Create task with the uploaded audio, text, and optional options
  *
  * Returns the taskId for tracking.
  */
@@ -584,6 +606,35 @@ export async function submitVoiceClone(
             fieldValue: options.emotion ?? config.emotionDefault,
         },
     ];
+
+    // Optional Node 1 model parameters
+    if (options.topK !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'top_k', fieldValue: String(options.topK) });
+    }
+    if (options.topP !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'top_p', fieldValue: String(options.topP) });
+    }
+    if (options.temperature !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'temperature', fieldValue: String(options.temperature) });
+    }
+    if (options.numBeams !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'num_beams', fieldValue: String(options.numBeams) });
+    }
+    if (options.maxMelTokens !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'max_mel_tokens', fieldValue: String(options.maxMelTokens) });
+    }
+    if (options.maxTextTokensPerSentence !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'max_text_tokens_per_sentence', fieldValue: String(options.maxTextTokensPerSentence) });
+    }
+    if (options.emoAlpha !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'emo_alpha', fieldValue: String(options.emoAlpha) });
+    }
+    if (options.useEmoText !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'use_emo_text', fieldValue: String(options.useEmoText) });
+    }
+    if (options.useRandom !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'use_random', fieldValue: String(options.useRandom) });
+    }
 
     console.log('[RunningHub] Voice clone nodeInfoList:', JSON.stringify(nodeInfoList));
 
