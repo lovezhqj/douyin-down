@@ -318,3 +318,235 @@ export async function submitAnimeConvert(imageUrl, options = {}) {
     console.log('[RunningHub] Anime convert task created:', taskResult.taskId);
     return taskResult.taskId;
 }
+// ============================================================
+// Voice Cloning (语音克隆) Workflow
+// ============================================================
+/**
+ * Upload an audio file to RunningHub.
+ * Downloads the audio from the given URL first, then uploads to RunningHub.
+ *
+ * POST https://www.runninghub.cn/task/openapi/upload
+ * Content-Type: multipart/form-data
+ */
+export async function uploadAudio(audioUrl) {
+    console.log('[RunningHub] Uploading audio from URL:', audioUrl.substring(0, 100));
+    // Step 1: Download the audio from the source URL
+    const audioResponse = await axios.get(audioUrl, {
+        responseType: 'arraybuffer',
+        timeout: 30000,
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; AudioCloneBot/1.0)',
+        },
+    });
+    const audioBuffer = Buffer.from(audioResponse.data);
+    const contentType = audioResponse.headers['content-type'] || 'audio/mpeg';
+    // Determine file extension from content type
+    let ext = 'mp3';
+    if (contentType.includes('wav'))
+        ext = 'wav';
+    else if (contentType.includes('flac'))
+        ext = 'flac';
+    else if (contentType.includes('ogg'))
+        ext = 'ogg';
+    // Step 2: Upload to RunningHub
+    const form = new FormData();
+    form.append('file', audioBuffer, {
+        filename: `upload.${ext}`,
+        contentType: contentType,
+    });
+    form.append('apiKey', getApiKey());
+    form.append('fileType', 'audio');
+    const response = await axios.post(`${RUNNINGHUB_BASE_URL}/task/openapi/upload`, form, {
+        headers: {
+            ...form.getHeaders(),
+        },
+        timeout: 60000,
+    });
+    console.log('[RunningHub] Audio upload response:', JSON.stringify(response.data));
+    if (response.data.code !== 0) {
+        throw new Error(`Audio upload failed: ${response.data.msg || JSON.stringify(response.data)}`);
+    }
+    return {
+        fileName: response.data.data?.fileName || response.data.data,
+        fileType: response.data.data?.fileType || 'input',
+    };
+}
+/**
+ * Voice cloning workflow configuration.
+ * The workflowId and nodeInfoList are configured via environment variables.
+ *
+ * Workflow node mapping (from IndexTTS2 1965684535247650818):
+ * Node 9 (LoadAudio)        — fieldName: "audio"  — 上传的克隆参考音频
+ * Node 6 (Text Multiline)   — fieldName: "text"   — 语音文本内容
+ * Node 17 (CR Text)         — fieldName: "text"   — 情感描述（默认："害羞的"）
+ * Node 1 (IndexTTS2Run)     — Model configurations (top_k, top_p, etc.)
+ */
+export function getVoiceCloneConfig() {
+    // The webapp/workflow ID for Voice Cloning — IndexTTS2 ComfyUI workflow ID
+    const workflowId = process.env.RUNNINGHUB_WORKFLOW_ID_VOICE_CLONE ||
+        process.env.RUNNINGHUB_WEBAPP_ID_VOICE_CLONE ||
+        '1965585853093396482';
+    return {
+        workflowId,
+        // Reference audio node
+        audioNodeId: '9',
+        audioFieldName: 'audio',
+        // Text prompt node
+        textNodeId: '6',
+        textFieldName: 'text',
+        // Emotion node
+        emotionNodeId: '17',
+        emotionFieldName: 'text',
+        emotionDefault: '害羞的',
+    };
+}
+/**
+ * Execute the full voice cloning flow:
+ * 1. Upload reference audio to RunningHub
+ * 2. Create task with the uploaded audio, text, and optional options
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitVoiceClone(audioUrl, text, options = {}) {
+    // Step 1: Upload reference audio
+    const uploadResult = await uploadAudio(audioUrl);
+    console.log('[RunningHub] Reference audio uploaded for voice cloning:', uploadResult.fileName);
+    // Step 2: Build nodeInfoList from workflow configuration
+    const config = getVoiceCloneConfig();
+    const nodeInfoList = [
+        // Required: the audio to clone from
+        {
+            nodeId: config.audioNodeId,
+            fieldName: config.audioFieldName,
+            fieldValue: uploadResult.fileName,
+        },
+        // Required: the text to synthesize
+        {
+            nodeId: config.textNodeId,
+            fieldName: config.textFieldName,
+            fieldValue: text,
+        },
+        // Optional: emotion description
+        {
+            nodeId: config.emotionNodeId,
+            fieldName: config.emotionFieldName,
+            fieldValue: options.emotion ?? config.emotionDefault,
+        },
+    ];
+    // Optional Node 1 model parameters
+    if (options.topK !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'top_k', fieldValue: String(options.topK) });
+    }
+    if (options.topP !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'top_p', fieldValue: String(options.topP) });
+    }
+    if (options.temperature !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'temperature', fieldValue: String(options.temperature) });
+    }
+    if (options.numBeams !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'num_beams', fieldValue: String(options.numBeams) });
+    }
+    if (options.maxMelTokens !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'max_mel_tokens', fieldValue: String(options.maxMelTokens) });
+    }
+    if (options.maxTextTokensPerSentence !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'max_text_tokens_per_sentence', fieldValue: String(options.maxTextTokensPerSentence) });
+    }
+    if (options.emoAlpha !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'emo_alpha', fieldValue: String(options.emoAlpha) });
+    }
+    if (options.useEmoText !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'use_emo_text', fieldValue: String(options.useEmoText) });
+    }
+    if (options.useRandom !== undefined) {
+        nodeInfoList.push({ nodeId: '1', fieldName: 'use_random', fieldValue: String(options.useRandom) });
+    }
+    console.log('[RunningHub] Voice clone nodeInfoList:', JSON.stringify(nodeInfoList));
+    // Step 3: Create task
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Voice clone task created:', taskResult.taskId);
+    return taskResult.taskId;
+}
+// ============================================================
+// Almighty Text-to-Image (全能文生图) Workflow
+// ============================================================
+/**
+ * Text-to-Image workflow configuration.
+ * The workflowId and nodeInfoList are configured via environment variables.
+ *
+ * Workflow node mapping (from 全能图片G-2.0-文生图_api.json):
+ * Node 18 (RH_RhartImageG2TextToImage)
+ * - fieldName: "prompt"      - 提示词
+ * - fieldName: "aspectRatio" - 宽高比 (默认 1:1, or 4:3 etc.)
+ * - fieldName: "resolution"  - 分辨率 (默认 1k)
+ * - fieldName: "seed"        - 随机种子 (数字, 默认随机)
+ * - fieldName: "skip_error"  - 跳过错误 (默认 false)
+ */
+export function getTextToImageConfig() {
+    // The webapp/workflow ID for Almighty Text-to-Image — 全能图片G-2.0-文生图
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_TEXT_TO_IMAGE || '2046775087558299649';
+    return {
+        workflowId,
+        textToImageNodeId: '18',
+        promptFieldName: 'prompt',
+        aspectRatioFieldName: 'aspectRatio',
+        aspectRatioDefault: '1:1',
+        resolutionFieldName: 'resolution',
+        resolutionDefault: '1k',
+        seedFieldName: 'seed',
+        skipErrorFieldName: 'skip_error',
+        skipErrorDefault: false,
+    };
+}
+/**
+ * Execute the full text-to-image flow:
+ * 1. Create task with prompt and options
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitTextToImage(options) {
+    const config = getTextToImageConfig();
+    const nodeInfoList = [
+        // Required: prompt
+        {
+            nodeId: config.textToImageNodeId,
+            fieldName: config.promptFieldName,
+            fieldValue: options.prompt,
+        },
+    ];
+    // Optional: aspect ratio
+    const aspectRatio = options.aspectRatio ?? config.aspectRatioDefault;
+    nodeInfoList.push({
+        nodeId: config.textToImageNodeId,
+        fieldName: config.aspectRatioFieldName,
+        fieldValue: aspectRatio,
+    });
+    // Optional: resolution
+    const resolution = options.resolution ?? config.resolutionDefault;
+    nodeInfoList.push({
+        nodeId: config.textToImageNodeId,
+        fieldName: config.resolutionFieldName,
+        fieldValue: resolution,
+    });
+    // Optional: seed
+    const seed = options.seed !== undefined && options.seed >= 0
+        ? options.seed
+        : Math.floor(Math.random() * 1000000000);
+    nodeInfoList.push({
+        nodeId: config.textToImageNodeId,
+        fieldName: config.seedFieldName,
+        fieldValue: String(seed),
+    });
+    // Optional: skip error
+    const skipError = options.skipError ?? config.skipErrorDefault;
+    nodeInfoList.push({
+        nodeId: config.textToImageNodeId,
+        fieldName: config.skipErrorFieldName,
+        fieldValue: String(skipError),
+    });
+    console.log('[RunningHub] Text to Image nodeInfoList:', JSON.stringify(nodeInfoList));
+    // Create task
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Text to Image task created:', taskResult.taskId);
+    return taskResult.taskId;
+}

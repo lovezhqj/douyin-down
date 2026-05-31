@@ -13,9 +13,10 @@
    - [发起老照片修复](#3-发起老照片修复)
    - [发起真人转动漫](#4-发起真人转动漫)
    - [发起语音克隆](#5-发起语音克隆)
-   - [查询任务结果](#6-查询任务结果)
-   - [发起视频文案提取](#7-发起视频文案提取)
-   - [查询视频文案提取结果](#8-查询视频文案提取结果)
+   - [发起全能文生图](#6-发起全能文生图)
+   - [查询任务结果](#7-查询任务结果)
+   - [发起视频文案提取](#8-发起视频文案提取)
+   - [查询视频文案提取结果](#9-查询视频文案提取结果)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -33,6 +34,7 @@
 | 发起老照片修复 | `POST` | `/api/photo/restore` | 提交照片修复任务（异步处理） |
 | 发起真人转动漫 | `POST` | `/api/photo/anime` | 提交真人转动漫任务（异步处理） |
 | 发起语音克隆 | `POST` | `/api/voice/clone` | 提交语音克隆任务（异步处理） |
+| 发起全能文生图 | `POST` | `/api/photo/text_to_image` | 提交全能文生图任务（异步处理） |
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
 | 发起视频文案提取 | `POST` | `/api/wechat/transcript/submit` | 提交抖音链接，解析并提取语音文案（异步） |
 | 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
@@ -468,7 +470,70 @@ Content-Type: application/json
 
 ---
 
-### 6. 查询任务结果
+### 6. 发起全能文生图
+
+**POST** `/api/photo/text_to_image`
+
+发起一个全能文生图任务（G-2.0 文生图）。用户提供提示词及可选参数（如宽高比、分辨率、随机种子等），服务端异步处理并在完成后返回生成的图片。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `openid` | string | ✅ | 微信用户的 openid |
+| `bizCode` | string | ✅ | 业务代码，全能文生图固定为 `text_to_image` |
+| `prompt` | string | ✅ | 提示词（生成图片的描述文本） |
+| `aspectRatio` | string | ❌ | 宽高比。支持 `"1:1"`, `"4:3"`, `"3:4"`, `"16:9"`, `"9:16"`。默认 `"1:1"` |
+| `resolution` | string | ❌ | 分辨率。支持 `"1k"`, `"2k"`。默认 `"1k"` |
+| `seed` | number | ❌ | 随机种子（正整数）。不传或传入小于 0 时将自动在服务端生成随机种子 |
+| `skipError` | boolean | ❌ | 是否跳过错误。默认 `false` |
+
+#### 请求示例
+
+```json
+{
+  "openid": "oABC123456789",
+  "bizCode": "text_to_image",
+  "prompt": "谷雨节气非遗皮影海报，春雨润田，谷生万物",
+  "aspectRatio": "4:3",
+  "resolution": "1k"
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "任务已提交，正在后台处理中，请稍后查询结果",
+  "data": {
+    "taskId": "rh_task_1234567890",
+    "status": "PENDING"
+  }
+}
+```
+
+#### 响应 - 有正在处理的任务 (409)
+
+```json
+{
+  "success": false,
+  "error": "您有一个正在处理中的任务，请等待处理完成后再次提交"
+}
+```
+
+> [!WARNING]
+> **并发限制**：同一用户（openid）+ 同一业务代码（bizCode）只能有一个进行中的任务。必须等上一个任务完成（SUCCESS 或 FAILED）后才能再次提交。
+
+---
+
+### 7. 查询任务结果
 
 **GET** `/api/photo/result`
 
@@ -479,7 +544,7 @@ Content-Type: application/json
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `openid` | string | ✅ | 微信用户的 openid |
-| `bizCode` | string | ✅ | 业务代码，如 `photo_restore`、`anime_convert`、`voice_clone` |
+| `bizCode` | string | ✅ | 业务代码，如 `photo_restore`、`anime_convert`、`voice_clone`、`text_to_image` |
 
 #### 请求示例
 
@@ -531,7 +596,7 @@ GET /api/photo/result?openid=oABC123456789&bizCode=photo_restore
 
 #### 响应 - 任务成功 ✅
 
-##### 1. 图像类任务 (如 photo_restore, anime_convert)
+##### 1. 图像与文生图类任务 (如 photo_restore, anime_convert, text_to_image)
 ```json
 {
   "success": true,
@@ -541,6 +606,23 @@ GET /api/photo/result?openid=oABC123456789&bizCode=photo_restore
     "message": "任务处理完成",
     "outputImageUrl": "https://runninghub.cn/output/restored-photo.png",
     "inputImageUrl": "https://your-oss.com/photos/old-photo.jpg",
+    "createdAt": "2026-05-28T00:00:00.000Z",
+    "updatedAt": "2026-05-28T00:01:30.000Z"
+  }
+}
+```
+
+##### 2. 文生图类任务额外字段 (当 bizCode 为 text_to_image 时)
+```json
+{
+  "success": true,
+  "data": {
+    "status": "SUCCESS",
+    "taskId": "rh_task_1234567890",
+    "message": "任务处理完成",
+    "prompt": "谷雨节气非遗皮影海报，春雨润田，谷生万物",
+    "outputImageUrl": "https://runninghub.cn/output/restored-photo.png",
+    "inputImageUrl": "谷雨节气非遗皮影海报，春雨润田，谷生万物",
     "createdAt": "2026-05-28T00:00:00.000Z",
     "updatedAt": "2026-05-28T00:01:30.000Z"
   }
@@ -585,7 +667,7 @@ GET /api/photo/result?openid=oABC123456789&bizCode=photo_restore
 
 ---
 
-### 7. 发起视频文案提取
+### 8. 发起视频文案提取
 
 **POST** `/api/wechat/transcript/submit`
 
@@ -663,7 +745,7 @@ Content-Type: application/json
 
 ---
 
-### 8. 查询视频文案提取结果
+### 9. 查询视频文案提取结果
 
 **GET** `/api/wechat/transcript/result`
 
@@ -828,6 +910,8 @@ GET /api/wechat/transcript/result?taskId=123456
 |---------|------|------|
 | `photo_restore` | 老照片修复 | ✅ 已上线 |
 | `anime_convert` | 真人转动漫 | ✅ 已上线 |
+| `voice_clone` | 语音克隆 | ✅ 已上线 |
+| `text_to_image` | 全能文生图 | ✅ 已上线 |
 | `photo_expand` | 照片扩图 | 🔜 计划中 |
 | `photo_colorize` | 黑白照片上色 | 🔜 计划中 |
 
@@ -984,6 +1068,43 @@ export function submitAnimeConvert(openid, imageUrl) {
         openid: openid,
         bizCode: 'anime_convert',
         imageUrl: imageUrl,
+      },
+      success(res) {
+        if (res.statusCode === 200 && res.data.success) {
+          resolve(res.data);
+        } else if (res.statusCode === 409) {
+          reject(new Error(res.data.error || '有正在处理中的任务'));
+        } else {
+          reject(new Error(res.data.error || '提交失败'));
+        }
+      },
+      fail(err) {
+        reject(new Error('网络请求失败'));
+      },
+    });
+  });
+}
+
+/**
+ * 发起全能文生图
+ * @param {string} openid - 微信用户 openid
+ * @param {string} prompt - 生成图片的提示词描述
+ * @param {object} [options] - 宽高比、分辨率、随机种子等可选参数
+ * @returns {Promise<object>}
+ */
+export function submitTextToImage(openid, prompt, options = {}) {
+  return new Promise((resolve, reject) => {
+    wx.request({
+      url: `${BASE_URL}/api/photo/text_to_image`,
+      method: 'POST',
+      header: {
+        'Content-Type': 'application/json',
+      },
+      data: {
+        openid: openid,
+        bizCode: 'text_to_image',
+        prompt: prompt,
+        ...options,
       },
       success(res) {
         if (res.statusCode === 200 && res.data.success) {

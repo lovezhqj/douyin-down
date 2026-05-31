@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import FormData from 'form-data';
 import { initDatabase, hasActiveTask, createTask as createDbTask, updateTaskByTaskId, getLatestTask, getTaskByTaskId, cleanStaleTasks, } from './db.js';
-import { submitPhotoRestore, submitAnimeConvert, uploadFileV2, } from './runninghub.js';
+import { submitPhotoRestore, submitAnimeConvert, submitVoiceClone, uploadFileV2, submitTextToImage, } from './runninghub.js';
 // ============================================================
 // Constants & Helpers
 // ============================================================
@@ -729,6 +729,130 @@ app.post('/api/photo/anime', async (req, res) => {
     }
 });
 // ============================================================
+// API: POST /api/photo/text_to_image — 发起全能文生图任务
+// ============================================================
+app.post('/api/photo/text_to_image', async (req, res) => {
+    try {
+        const { openid, bizCode, prompt, aspectRatio, resolution, seed, skipError } = req.body;
+        // Validate required fields
+        if (!openid || typeof openid !== 'string') {
+            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'text_to_image') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 text_to_image' });
+        }
+        if (!prompt || typeof prompt !== 'string') {
+            return res.status(400).json({ success: false, error: 'prompt 参数必填且必须为非空字符串' });
+        }
+        console.log(`[TextToImage] Request from openid=${openid}, bizCode=${bizCode}`);
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, 'text_to_image');
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+        // Submit text-to-image task to RunningHub with optional parameters
+        const taskId = await submitTextToImage({
+            prompt,
+            aspectRatio: typeof aspectRatio === 'string' ? aspectRatio : undefined,
+            resolution: typeof resolution === 'string' ? resolution : undefined,
+            seed: typeof seed === 'number' ? seed : undefined,
+            skipError: typeof skipError === 'boolean' ? skipError : undefined,
+        });
+        // Save to database, storing the prompt text in input_image_url field
+        const task = await createDbTask(openid, bizCode, taskId, prompt);
+        console.log(`[TextToImage] Task created: id=${task.id}, taskId=${taskId}`);
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    }
+    catch (error) {
+        console.error('[TextToImage] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+// ============================================================================
+// API: POST /api/voice/clone — 发起语音克隆任务
+// ============================================================
+app.post('/api/voice/clone', async (req, res) => {
+    try {
+        const { openid, bizCode, audioUrl, text, emotion, topK, topP, temperature, numBeams, maxMelTokens, maxTextTokensPerSentence, emoAlpha, useEmoText, useRandom, } = req.body;
+        // Validate required fields
+        if (!openid || typeof openid !== 'string') {
+            return res.status(400).json({ success: false, error: 'openid 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'voice_clone') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 voice_clone' });
+        }
+        if (!audioUrl || typeof audioUrl !== 'string') {
+            return res.status(400).json({ success: false, error: 'audioUrl 参数必填' });
+        }
+        if (!text || typeof text !== 'string') {
+            return res.status(400).json({ success: false, error: 'text 参数必填' });
+        }
+        // Validate audioUrl format
+        if (!audioUrl.startsWith('http://') && !audioUrl.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'audioUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+        console.log(`[VoiceClone] Request from openid=${openid}, bizCode=${bizCode}`);
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, 'voice_clone');
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+        // Submit voice clone to RunningHub with optional parameters
+        const taskId = await submitVoiceClone(audioUrl, text, {
+            emotion: typeof emotion === 'string' ? emotion : undefined,
+            topK: typeof topK === 'number' ? topK : undefined,
+            topP: typeof topP === 'number' ? topP : undefined,
+            temperature: typeof temperature === 'number' ? temperature : undefined,
+            numBeams: typeof numBeams === 'number' ? numBeams : undefined,
+            maxMelTokens: typeof maxMelTokens === 'number' ? maxMelTokens : undefined,
+            maxTextTokensPerSentence: typeof maxTextTokensPerSentence === 'number' ? maxTextTokensPerSentence : undefined,
+            emoAlpha: typeof emoAlpha === 'number' ? emoAlpha : undefined,
+            useEmoText: typeof useEmoText === 'boolean' ? useEmoText : undefined,
+            useRandom: typeof useRandom === 'boolean' ? useRandom : undefined,
+        });
+        // Save to database
+        const task = await createDbTask(openid, bizCode, taskId, audioUrl);
+        console.log(`[VoiceClone] Task created: id=${task.id}, taskId=${taskId}`);
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    }
+    catch (error) {
+        console.error('[VoiceClone] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+// ============================================================
 // API: POST /api/wechat/transcript/submit — 发起视频文案提取
 // ============================================================
 app.post('/api/wechat/transcript/submit', async (req, res) => {
@@ -974,6 +1098,13 @@ app.get('/api/photo/result', async (req, res) => {
                 break;
             case 'SUCCESS':
                 responseData.message = '任务处理完成';
+                if (bizCode === 'voice_clone') {
+                    responseData.outputAudioUrl = task.output_image_url;
+                    responseData.inputAudioUrl = task.input_image_url;
+                }
+                if (bizCode === 'text_to_image') {
+                    responseData.prompt = task.input_image_url;
+                }
                 responseData.outputImageUrl = task.output_image_url;
                 responseData.inputImageUrl = task.input_image_url;
                 break;

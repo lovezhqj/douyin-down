@@ -645,4 +645,114 @@ export async function submitVoiceClone(
     return taskResult.taskId;
 }
 
+// ============================================================
+// Almighty Text-to-Image (全能文生图) Workflow
+// ============================================================
+
+/**
+ * Text-to-Image workflow configuration.
+ * The workflowId and nodeInfoList are configured via environment variables.
+ *
+ * Workflow node mapping (from 全能图片G-2.0-文生图_api.json):
+ * Node 18 (RH_RhartImageG2TextToImage)
+ * - fieldName: "prompt"      - 提示词
+ * - fieldName: "aspectRatio" - 宽高比 (默认 1:1, or 4:3 etc.)
+ * - fieldName: "resolution"  - 分辨率 (默认 1k)
+ * - fieldName: "seed"        - 随机种子 (数字, 默认随机)
+ * - fieldName: "skip_error"  - 跳过错误 (默认 false)
+ */
+export function getTextToImageConfig() {
+    // The webapp/workflow ID for Almighty Text-to-Image — 全能图片G-2.0-文生图
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_TEXT_TO_IMAGE || '2046775087558299649';
+
+    return {
+        workflowId,
+        textToImageNodeId: '18',
+        promptFieldName: 'prompt',
+        aspectRatioFieldName: 'aspectRatio',
+        aspectRatioDefault: '1:1',
+        resolutionFieldName: 'resolution',
+        resolutionDefault: '1k',
+        seedFieldName: 'seed',
+        skipErrorFieldName: 'skip_error',
+        skipErrorDefault: false,
+    };
+}
+
+export interface TextToImageOptions {
+    /** Prompt text. Required. */
+    prompt: string;
+    /** Aspect ratio. e.g. "1:1", "4:3", "3:4", "16:9", "9:16". Default: "1:1" */
+    aspectRatio?: string;
+    /** Resolution. e.g. "1k", "2k". Default: "1k" */
+    resolution?: string;
+    /** Random seed. If not provided or <= 0, a random seed will be generated. */
+    seed?: number;
+    /** Whether to skip error. Default: false */
+    skipError?: boolean;
+}
+
+/**
+ * Execute the full text-to-image flow:
+ * 1. Create task with prompt and options
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitTextToImage(
+    options: TextToImageOptions,
+): Promise<string> {
+    const config = getTextToImageConfig();
+    const nodeInfoList: Array<{ nodeId: string; fieldName: string; fieldValue: string }> = [
+        // Required: prompt
+        {
+            nodeId: config.textToImageNodeId,
+            fieldName: config.promptFieldName,
+            fieldValue: options.prompt,
+        },
+    ];
+
+    // Optional: aspect ratio
+    const aspectRatio = options.aspectRatio ?? config.aspectRatioDefault;
+    nodeInfoList.push({
+        nodeId: config.textToImageNodeId,
+        fieldName: config.aspectRatioFieldName,
+        fieldValue: aspectRatio,
+    });
+
+    // Optional: resolution
+    const resolution = options.resolution ?? config.resolutionDefault;
+    nodeInfoList.push({
+        nodeId: config.textToImageNodeId,
+        fieldName: config.resolutionFieldName,
+        fieldValue: resolution,
+    });
+
+    // Optional: seed
+    const seed = options.seed !== undefined && options.seed >= 0 
+        ? options.seed 
+        : Math.floor(Math.random() * 1000000000);
+    nodeInfoList.push({
+        nodeId: config.textToImageNodeId,
+        fieldName: config.seedFieldName,
+        fieldValue: String(seed),
+    });
+
+    // Optional: skip error
+    const skipError = options.skipError ?? config.skipErrorDefault;
+    nodeInfoList.push({
+        nodeId: config.textToImageNodeId,
+        fieldName: config.skipErrorFieldName,
+        fieldValue: String(skipError),
+    });
+
+    console.log('[RunningHub] Text to Image nodeInfoList:', JSON.stringify(nodeInfoList));
+
+    // Create task
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Text to Image task created:', taskResult.taskId);
+
+    return taskResult.taskId;
+}
+
+
 
