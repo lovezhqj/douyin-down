@@ -515,19 +515,21 @@ export async function submitTextToImage(options) {
         },
     ];
     // Optional: aspect ratio
-    const aspectRatio = options.aspectRatio ?? config.aspectRatioDefault;
-    nodeInfoList.push({
-        nodeId: config.textToImageNodeId,
-        fieldName: config.aspectRatioFieldName,
-        fieldValue: aspectRatio,
-    });
+    if (options.aspectRatio !== undefined) {
+        nodeInfoList.push({
+            nodeId: config.textToImageNodeId,
+            fieldName: config.aspectRatioFieldName,
+            fieldValue: options.aspectRatio,
+        });
+    }
     // Optional: resolution
-    const resolution = options.resolution ?? config.resolutionDefault;
-    nodeInfoList.push({
-        nodeId: config.textToImageNodeId,
-        fieldName: config.resolutionFieldName,
-        fieldValue: resolution,
-    });
+    if (options.resolution !== undefined) {
+        nodeInfoList.push({
+            nodeId: config.textToImageNodeId,
+            fieldName: config.resolutionFieldName,
+            fieldValue: options.resolution,
+        });
+    }
     // Optional: seed
     const seed = options.seed !== undefined && options.seed >= 0
         ? options.seed
@@ -538,12 +540,13 @@ export async function submitTextToImage(options) {
         fieldValue: String(seed),
     });
     // Optional: skip error
-    const skipError = options.skipError ?? config.skipErrorDefault;
-    nodeInfoList.push({
-        nodeId: config.textToImageNodeId,
-        fieldName: config.skipErrorFieldName,
-        fieldValue: String(skipError),
-    });
+    if (options.skipError !== undefined) {
+        nodeInfoList.push({
+            nodeId: config.textToImageNodeId,
+            fieldName: config.skipErrorFieldName,
+            fieldValue: String(options.skipError),
+        });
+    }
     console.log('[RunningHub] Text to Image nodeInfoList:', JSON.stringify(nodeInfoList));
     // Create task
     const taskResult = await createTask(config.workflowId, nodeInfoList);
