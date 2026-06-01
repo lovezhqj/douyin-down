@@ -828,13 +828,14 @@ export async function createTaskV2(
 
     console.log('[RunningHub] Create V2 task response:', JSON.stringify(response.data));
 
-    if (response.data.code !== 0) {
-        throw new Error(`Create V2 task failed: ${response.data.message || response.data.msg || JSON.stringify(response.data)}`);
+    const taskId = response.data?.taskId || response.data?.task_id || response.data?.data?.taskId || response.data?.data?.task_id;
+    if (!taskId) {
+        throw new Error(`Create V2 task failed: ${response.data?.message || response.data?.msg || JSON.stringify(response.data)}`);
     }
 
     return {
-        taskId: response.data.data?.taskId || response.data.data?.task_id || response.data.data,
-        taskStatus: response.data.data?.taskStatus || response.data.data?.status,
+        taskId: taskId,
+        taskStatus: response.data?.status || response.data?.taskStatus || response.data?.data?.taskStatus || response.data?.data?.status,
     };
 }
 
