@@ -1264,8 +1264,29 @@ app.post('/api/webhook/runninghub', async (req, res) => {
         // Extract output image URL from multiple possible locations
         let outputImageUrl: string | null = null;
 
-        // 1. Try parsedEventData.data array (RunningHub's actual format)
-        if (parsedEventData?.data && Array.isArray(parsedEventData.data)) {
+        // 1. Try parsedEventData.results array (RunningHub's V2 format)
+        if (parsedEventData?.results && Array.isArray(parsedEventData.results)) {
+            for (const item of parsedEventData.results) {
+                if (item.url) {
+                    outputImageUrl = item.url;
+                    break;
+                }
+            }
+        }
+
+        // 2. Try body.results array (V2 root results)
+        if (!outputImageUrl && body.results && Array.isArray(body.results)) {
+            for (const item of body.results) {
+                const url = item.url || item.fileUrl;
+                if (url) {
+                    outputImageUrl = url;
+                    break;
+                }
+            }
+        }
+
+        // 3. Try parsedEventData.data array (RunningHub's V1 format)
+        if (!outputImageUrl && parsedEventData?.data && Array.isArray(parsedEventData.data)) {
             for (const item of parsedEventData.data) {
                 if (item.fileUrl) {
                     outputImageUrl = item.fileUrl;
@@ -1274,19 +1295,19 @@ app.post('/api/webhook/runninghub', async (req, res) => {
             }
         }
 
-        // 2. Try body.data or body.outputs (legacy formats)
+        // 4. Try body.data or body.outputs (legacy formats)
         if (!outputImageUrl) {
             const outputs = body.data || body.outputs || body.output;
             if (Array.isArray(outputs)) {
                 for (const item of outputs) {
-                    const url = item.fileUrl || item.output?.fileUrl || item.file_url;
+                    const url = item.fileUrl || item.output?.fileUrl || item.file_url || item.url;
                     if (url) {
                         outputImageUrl = url;
                         break;
                     }
                 }
             } else if (outputs && typeof outputs === 'object') {
-                outputImageUrl = outputs.fileUrl || outputs.file_url || outputs.output?.fileUrl || null;
+                outputImageUrl = outputs.fileUrl || outputs.file_url || outputs.url || outputs.output?.fileUrl || null;
             }
         }
 
