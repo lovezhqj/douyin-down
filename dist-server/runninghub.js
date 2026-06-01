@@ -580,8 +580,38 @@ export function getTextToSpeechConfig() {
     };
 }
 /**
+ * Create an AI App task on RunningHub using the V2 API.
+ * This submits the workflow with the parameters and a webhook URL.
+ *
+ * POST https://www.runninghub.cn/openapi/v2/run/ai-app/{webappId}
+ * Authorization: Bearer <API_KEY>
+ */
+export async function createTaskV2(workflowId, nodeInfoList) {
+    const webhookUrl = `${getWebhookBaseUrl()}/api/webhook/runninghub`;
+    console.log('[RunningHub] Creating V2 task, workflow:', workflowId, 'webhook:', webhookUrl);
+    const requestBody = {
+        nodeInfoList: nodeInfoList,
+        webhookUrl: webhookUrl,
+    };
+    const response = await axios.post(`${RUNNINGHUB_BASE_URL}/openapi/v2/run/ai-app/${workflowId}`, requestBody, {
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${getApiKey()}`,
+        },
+        timeout: 30000,
+    });
+    console.log('[RunningHub] Create V2 task response:', JSON.stringify(response.data));
+    if (response.data.code !== 0) {
+        throw new Error(`Create V2 task failed: ${response.data.message || response.data.msg || JSON.stringify(response.data)}`);
+    }
+    return {
+        taskId: response.data.data?.taskId || response.data.data?.task_id || response.data.data,
+        taskStatus: response.data.data?.taskStatus || response.data.data?.status,
+    };
+}
+/**
  * Execute the full text-to-speech flow:
- * 1. Create task with text and options
+ * 1. Create task with text and options via V2 run/ai-app API
  *
  * Returns the taskId for tracking.
  */
@@ -608,8 +638,8 @@ export async function submitTextToSpeech(options) {
         },
     ];
     console.log('[RunningHub] Text to Speech nodeInfoList:', JSON.stringify(nodeInfoList));
-    // Create task
-    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    // Create task using the V2 openapi endpoint
+    const taskResult = await createTaskV2(config.workflowId, nodeInfoList);
     console.log('[RunningHub] Text to Speech task created:', taskResult.taskId);
     return taskResult.taskId;
 }
