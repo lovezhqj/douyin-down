@@ -14,9 +14,10 @@
    - [发起真人转动漫](#4-发起真人转动漫)
    - [发起语音克隆](#5-发起语音克隆)
    - [发起全能文生图](#6-发起全能文生图)
-   - [查询任务结果](#7-查询任务结果)
-   - [发起视频文案提取](#8-发起视频文案提取)
-   - [查询视频文案提取结果](#9-查询视频文案提取结果)
+   - [发起文本转语音](#7-发起文本转语音)
+   - [查询任务结果](#8-查询任务结果)
+   - [发起视频文案提取](#9-发起视频文案提取)
+   - [查询视频文案提取结果](#10-查询视频文案提取结果)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -35,6 +36,7 @@
 | 发起真人转动漫 | `POST` | `/api/photo/anime` | 提交真人转动漫任务（异步处理） |
 | 发起语音克隆 | `POST` | `/api/voice/clone` | 提交语音克隆任务（异步处理） |
 | 发起全能文生图 | `POST` | `/api/photo/text_to_image` | 提交全能文生图任务（异步处理） |
+| 发起文本转语音 | `POST` | `/api/voice/text_to_speech` | 提交文本转语音任务（异步处理） |
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
 | 发起视频文案提取 | `POST` | `/api/wechat/transcript/submit` | 提交抖音链接，解析并提取语音文案（异步） |
 | 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
@@ -533,7 +535,68 @@ Content-Type: application/json
 
 ---
 
-### 7. 查询任务结果
+### 7. 发起文本转语音
+
+**POST** `/api/voice/text_to_speech`
+
+发起一个文本转语音任务（Qwen3TTS）。提供合成文本、可选的音色描述（如萝莉少女、年轻男声等）和语言，服务端异步处理并在完成后返回生成的音频。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ✅ | 微信小程序授权 code，用于后端换取 openid |
+| `bizCode` | string | ✅ | 业务代码，文本转语音固定为 `text_to_speech` |
+| `text` | string | ✅ | 朗读文本内容 |
+| `voiceDescription` | string | ❌ | 音色描述，如 `"萝莉少女声音"`, `"磁性大叔声音"`。默认 `"萝莉少女声音"` |
+| `language` | string | ❌ | 语言。支持 `"自动"`, `"中文"`, `"英文"`, `"日文"`, `"韩文"`, 等。默认 `"自动"` |
+
+#### 请求示例
+
+```json
+{
+  "code": "0a3Xyz000abc12def345",
+  "bizCode": "text_to_speech",
+  "text": "八百标兵奔北坡，炮兵并排北边跑，炮兵怕把标兵碰，标兵怕碰炮兵炮",
+  "voiceDescription": "温柔磁性年轻女声",
+  "language": "中文"
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "任务已提交，正在后台处理中，请稍后查询结果",
+  "data": {
+    "taskId": "rh_task_1234567890",
+    "status": "PENDING"
+  }
+}
+```
+
+#### 响应 - 有正在处理的任务 (409)
+
+```json
+{
+  "success": false,
+  "error": "您有一个正在处理中的任务，请等待处理完成后再次提交"
+}
+```
+
+> [!WARNING]
+> **并发限制**：同一用户（基于 code 换取的 openid）+ 同一业务代码（bizCode）只能有一个进行中的任务。必须等上一个任务完成（SUCCESS 或 FAILED）后才能再次提交。
+
+---
+
+### 8. 查询任务结果
 
 **GET** `/api/photo/result`
 
@@ -667,7 +730,7 @@ GET /api/photo/result?code=0a3Xyz000abc12def345&bizCode=photo_restore
 
 ---
 
-### 8. 发起视频文案提取
+### 9. 发起视频文案提取
 
 **POST** `/api/wechat/transcript/submit`
 
@@ -745,7 +808,7 @@ Content-Type: application/json
 
 ---
 
-### 9. 查询视频文案提取结果
+### 10. 查询视频文案提取结果
 
 **GET** `/api/wechat/transcript/result`
 

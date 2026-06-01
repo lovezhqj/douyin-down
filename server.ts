@@ -20,6 +20,7 @@ import {
     submitVoiceClone,
     uploadFileV2,
     submitTextToImage,
+    submitTextToSpeech,
 } from './runninghub.js';
 
 // ============================================================
@@ -1009,6 +1010,81 @@ app.post('/api/voice/clone', async (req, res) => {
 });
 
 // ============================================================
+// API: POST /api/voice/text_to_speech — 发起文本转语音任务
+// ============================================================
+app.post('/api/voice/text_to_speech', async (req, res) => {
+    try {
+        const {
+            code,
+            bizCode,
+            text,
+            voiceDescription,
+            language,
+        } = req.body;
+
+        // Validate required fields
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'text_to_speech') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 text_to_speech' });
+        }
+        if (!text || typeof text !== 'string') {
+            return res.status(400).json({ success: false, error: 'text 参数必填且必须为非空字符串' });
+        }
+
+        // Exchange code for openid
+        let openid: string;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        } catch (err: any) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+        }
+
+        console.log(`[TextToSpeech] Request from openid=${openid}, bizCode=${bizCode}`);
+
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, 'text_to_speech');
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+
+        // Submit text-to-speech to RunningHub with optional parameters
+        const taskId = await submitTextToSpeech({
+            text,
+            voiceDescription: typeof voiceDescription === 'string' ? voiceDescription : undefined,
+            language: typeof language === 'string' ? language : undefined,
+        });
+
+        // Save to database
+        const task = await createDbTask(openid, bizCode, taskId, text);
+        console.log(`[TextToSpeech] Task created: id=${task.id}, taskId=${taskId}`);
+
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    } catch (error: any) {
+        console.error('[TextToSpeech] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
 // API: POST /api/wechat/transcript/submit — 发起视频文案提取
 
 // ============================================================
@@ -1293,9 +1369,12 @@ app.get('/api/photo/result', async (req, res) => {
                 break;
             case 'SUCCESS':
                 responseData.message = '任务处理完成';
-                if (bizCode === 'voice_clone') {
+                if (bizCode === 'voice_clone' || bizCode === 'text_to_speech') {
                     responseData.outputAudioUrl = task.output_image_url;
                     responseData.inputAudioUrl = task.input_image_url;
+                }
+                if (bizCode === 'text_to_speech') {
+                    responseData.text = task.input_image_url;
                 }
                 if (bizCode === 'text_to_image') {
                     responseData.prompt = task.input_image_url;

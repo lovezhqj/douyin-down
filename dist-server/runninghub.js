@@ -553,3 +553,63 @@ export async function submitTextToImage(options) {
     console.log('[RunningHub] Text to Image task created:', taskResult.taskId);
     return taskResult.taskId;
 }
+// ============================================================
+// Text-to-Speech (文本转语音) Workflow
+// ============================================================
+/**
+ * Text-to-Speech workflow configuration.
+ * The workflowId and nodeInfoList are configured via environment variables.
+ *
+ * Workflow node mapping (from 文本转语音(含声音设计) Qwen3TTS 千问 2017058834166059009):
+ * Node 99 (Text Multiline)     - fieldName: "text"  - 朗读文本
+ * Node 100 (Text Multiline)    - fieldName: "text"  - 音色描述
+ * Node 86 (Qwen3TTSVoiceDesign) - fieldName: "语言"  - 语言 (自动, 中文, 英文, 等)
+ */
+export function getTextToSpeechConfig() {
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_TEXT_TO_SPEECH || '2017058834166059009';
+    return {
+        workflowId,
+        textNodeId: '99',
+        textFieldName: 'text',
+        voiceDescriptionNodeId: '100',
+        voiceDescriptionFieldName: 'text',
+        voiceDescriptionDefault: '萝莉少女声音',
+        languageNodeId: '86',
+        languageFieldName: '语言',
+        languageDefault: '自动',
+    };
+}
+/**
+ * Execute the full text-to-speech flow:
+ * 1. Create task with text and options
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitTextToSpeech(options) {
+    const config = getTextToSpeechConfig();
+    const nodeInfoList = [
+        // Required: text to synthesize
+        {
+            nodeId: config.textNodeId,
+            fieldName: config.textFieldName,
+            fieldValue: options.text,
+        },
+        // Optional: voice description
+        {
+            nodeId: config.voiceDescriptionNodeId,
+            fieldName: config.voiceDescriptionFieldName,
+            fieldValue: options.voiceDescription ?? config.voiceDescriptionDefault,
+        },
+        // Optional: language
+        {
+            nodeId: config.languageNodeId,
+            fieldName: config.languageFieldName,
+            fieldValue: options.language ?? config.languageDefault,
+        },
+    ];
+    console.log('[RunningHub] Text to Speech nodeInfoList:', JSON.stringify(nodeInfoList));
+    // Create task
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Text to Speech task created:', taskResult.taskId);
+    return taskResult.taskId;
+}
