@@ -15,6 +15,7 @@
    - [发起语音克隆](#5-发起语音克隆)
    - [发起全能文生图](#6-发起全能文生图)
    - [发起文本转语音](#7-发起文本转语音)
+   - [发起图片去水印](#75-发起图片去水印)
    - [查询任务结果](#8-查询任务结果)
    - [发起视频文案提取](#9-发起视频文案提取)
    - [查询视频文案提取结果](#10-查询视频文案提取结果)
@@ -37,6 +38,7 @@
 | 发起语音克隆 | `POST` | `/api/voice/clone` | 提交语音克隆任务（异步处理） |
 | 发起全能文生图 | `POST` | `/api/photo/text_to_image` | 提交全能文生图任务（异步处理） |
 | 发起文本转语音 | `POST` | `/api/voice/text_to_speech` | 提交文本转语音任务（异步处理） |
+| 发起图片去水印 | `POST` | `/api/photo/remove_watermark` | 提交图片去水印任务（异步处理） |
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
 | 发起视频文案提取 | `POST` | `/api/wechat/transcript/submit` | 提交抖音链接，解析并提取语音文案（异步） |
 | 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
@@ -566,6 +568,63 @@ Content-Type: application/json
   "text": "八百标兵奔北坡，炮兵并排北边跑，炮兵怕把标兵碰，标兵怕碰炮兵炮",
   "voiceDescription": "温柔磁性年轻女声",
   "language": "中文"
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "任务已提交，正在后台处理中，请稍后查询结果",
+  "data": {
+    "taskId": "rh_task_1234567890",
+    "status": "PENDING"
+  }
+}
+```
+
+#### 响应 - 有正在处理的任务 (409)
+
+```json
+{
+  "success": false,
+  "error": "您有一个正在处理中的任务，请等待处理完成后再次提交"
+}
+```
+
+> [!WARNING]
+> **并发限制**：同一用户（基于 code 换取的 openid）+ 同一业务代码（bizCode）只能有一个进行中的任务。必须等上一个任务完成（SUCCESS 或 FAILED）后才能再次提交。
+
+---
+
+### 7.5. 发起图片去水印
+
+**POST** `/api/photo/remove_watermark`
+
+发起一个图片去水印任务。将上传的有水印图片进行处理，在云端去除水印。任务会异步处理，不会立即返回结果。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ✅ | 微信小程序授权 code，用于后端换取 openid |
+| `bizCode` | string | ✅ | 业务代码，图片去水印固定为 `remove_watermark` |
+| `imageUrl` | string | ✅ | 待去水印照片的 URL（需公网可访问的 http/https 链接，可从 `/api/upload` 上传获取） |
+
+#### 请求示例
+
+```json
+{
+  "code": "0a3Xyz000abc12def345",
+  "bizCode": "remove_watermark",
+  "imageUrl": "https://your-oss.com/photos/watermarked.jpg"
 }
 ```
 

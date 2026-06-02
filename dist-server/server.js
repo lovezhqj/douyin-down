@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import FormData from 'form-data';
 import { initDatabase, hasActiveTask, createTask as createDbTask, updateTaskByTaskId, getLatestTask, getTaskByTaskId, cleanStaleTasks, } from './db.js';
-import { submitPhotoRestore, submitAnimeConvert, submitVoiceClone, uploadFileV2, submitTextToImage, submitTextToSpeech, } from './runninghub.js';
+import { submitPhotoRestore, submitAnimeConvert, submitVoiceClone, uploadFileV2, submitTextToImage, submitTextToSpeech, submitWatermarkRemoval, } from './runninghub.js';
 // ============================================================
 // Constants & Helpers
 // ============================================================
@@ -742,6 +742,69 @@ app.post('/api/photo/anime', async (req, res) => {
     }
     catch (error) {
         console.error('[AnimeConvert] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+// ============================================================
+// API: POST /api/photo/remove_watermark — 发起图片去水印任务
+// ============================================================
+app.post('/api/photo/remove_watermark', async (req, res) => {
+    try {
+        const { code, bizCode, imageUrl } = req.body;
+        // Validate required fields
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'remove_watermark') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 remove_watermark' });
+        }
+        if (!imageUrl || typeof imageUrl !== 'string') {
+            return res.status(400).json({ success: false, error: 'imageUrl 参数必填' });
+        }
+        // Validate imageUrl format
+        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'imageUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+        }
+        console.log(`[WatermarkRemoval] Request from openid=${openid}, bizCode=${bizCode}`);
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, bizCode);
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+        // Submit watermark removal task to RunningHub
+        const taskId = await submitWatermarkRemoval(imageUrl);
+        // Save to database
+        const task = await createDbTask(openid, bizCode, taskId, imageUrl);
+        console.log(`[WatermarkRemoval] Task created: id=${task.id}, taskId=${taskId}`);
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    }
+    catch (error) {
+        console.error('[WatermarkRemoval] Error:', error.message);
         res.status(500).json({
             success: false,
             error: '提交任务失败：' + (error.message || '未知错误'),

@@ -644,3 +644,47 @@ export async function submitTextToSpeech(options) {
     console.log('[RunningHub] Text to Speech task created:', taskResult.taskId);
     return taskResult.taskId;
 }
+// ============================================================
+// Watermark Removal (图片去水印) Workflow
+// ============================================================
+/**
+ * Watermark removal workflow configuration.
+ * The workflowId and nodeInfoList are configured via environment variables.
+ */
+export function getWatermarkRemovalConfig() {
+    // The webapp/workflow ID for Watermark Removal — 图片去水印一键
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_WATERMARK_REMOVAL || '2037413745147777025';
+    return {
+        workflowId,
+        // Primary image input node
+        imageNodeId: '670',
+        imageFieldName: 'image',
+    };
+}
+/**
+ * Execute the full watermark removal flow:
+ * 1. Upload image to RunningHub
+ * 2. Create task V2 with the uploaded image
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitWatermarkRemoval(imageUrl) {
+    // Step 1: Upload image
+    const uploadResult = await uploadImage(imageUrl);
+    console.log('[RunningHub] Image uploaded for watermark removal:', uploadResult.fileName);
+    // Step 2: Build nodeInfoList from workflow configuration
+    const config = getWatermarkRemovalConfig();
+    const nodeInfoList = [
+        // Required: the image to process
+        {
+            nodeId: config.imageNodeId,
+            fieldName: config.imageFieldName,
+            fieldValue: uploadResult.fileName,
+        },
+    ];
+    console.log('[RunningHub] Watermark removal nodeInfoList:', JSON.stringify(nodeInfoList));
+    // Step 3: Create task using V2 API
+    const taskResult = await createTaskV2(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Watermark removal task created:', taskResult.taskId);
+    return taskResult.taskId;
+}
