@@ -652,12 +652,12 @@ export async function submitTextToSpeech(options) {
  * The workflowId and nodeInfoList are configured via environment variables.
  */
 export function getWatermarkRemovalConfig() {
-    // The webapp/workflow ID for Watermark Removal — 图片去水印一键
-    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_WATERMARK_REMOVAL || '2037413745147777025';
+    // The webapp/workflow ID for Watermark Removal — 图片去水印 无损一键去水印 图片越大时间越长
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_WATERMARK_REMOVAL || '2030295308986486786';
     return {
         workflowId,
         // Primary image input node
-        imageNodeId: '670',
+        imageNodeId: '191',
         imageFieldName: 'image',
     };
 }
