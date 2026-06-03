@@ -22,6 +22,7 @@ import {
     submitTextToImage,
     submitTextToSpeech,
     submitWatermarkRemoval,
+    submitImageToVideo,
 } from './runninghub.js';
 
 // ============================================================
@@ -1156,6 +1157,93 @@ app.post('/api/voice/text_to_speech', async (req, res) => {
 });
 
 // ============================================================
+// API: POST /api/video/image_to_video — 发起图生视频任务 (Wan2.2)
+// ============================================================
+app.post('/api/video/image_to_video', async (req, res) => {
+    try {
+        const {
+            code,
+            bizCode,
+            imageUrl,
+            positivePrompt,
+            negativePrompt,
+            maxResolution,
+            duration,
+            frameRate,
+            seed,
+        } = req.body;
+
+        // Validate required fields
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'image_to_video') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 image_to_video' });
+        }
+        if (!imageUrl || typeof imageUrl !== 'string') {
+            return res.status(400).json({ success: false, error: 'imageUrl 参数必填' });
+        }
+
+        // Validate imageUrl format
+        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'imageUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+
+        // Exchange code for openid
+        let openid: string;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        } catch (err: any) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+        }
+
+        console.log(`[ImageToVideo] Request from openid=${openid}, bizCode=${bizCode}`);
+
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, 'image_to_video');
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+
+        // Submit image-to-video task to RunningHub with optional parameters
+        const taskId = await submitImageToVideo(imageUrl, {
+            positivePrompt: typeof positivePrompt === 'string' ? positivePrompt : undefined,
+            negativePrompt: typeof negativePrompt === 'string' ? negativePrompt : undefined,
+            maxResolution: typeof maxResolution === 'number' ? maxResolution : undefined,
+            duration: typeof duration === 'number' ? duration : undefined,
+            frameRate: typeof frameRate === 'number' ? frameRate : undefined,
+            seed: typeof seed === 'number' ? seed : undefined,
+        });
+
+        // Save to database
+        const task = await createDbTask(openid, bizCode, taskId, imageUrl);
+        console.log(`[ImageToVideo] Task created: id=${task.id}, taskId=${taskId}`);
+
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    } catch (error: any) {
+        console.error('[ImageToVideo] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
 // API: POST /api/wechat/transcript/submit — 发起视频文案提取
 
 // ============================================================
@@ -1470,6 +1558,9 @@ app.get('/api/photo/result', async (req, res) => {
                 }
                 if (bizCode === 'text_to_image') {
                     responseData.prompt = task.input_image_url;
+                }
+                if (bizCode === 'image_to_video') {
+                    responseData.outputVideoUrl = task.output_image_url;
                 }
                 responseData.outputImageUrl = task.output_image_url;
                 responseData.inputImageUrl = task.input_image_url;
