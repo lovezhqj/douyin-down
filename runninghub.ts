@@ -1072,8 +1072,8 @@ export async function submitImageToVideo(
 
     console.log('[RunningHub] Image to Video nodeInfoList:', JSON.stringify(nodeInfoList));
 
-    // Step 3: Create task using V2 API
-    const taskResult = await createTaskV2(config.workflowId, nodeInfoList);
+    // Step 3: Create task using V1 API (服务端调用 apiType=5)
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
     console.log('[RunningHub] Image to Video task created:', taskResult.taskId);
 
     return taskResult.taskId;
