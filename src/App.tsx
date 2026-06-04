@@ -6,6 +6,28 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Link2, Download, Loader2, Play, AlertCircle, Home, Clock, Settings, ChevronRight, Copy, Check, Music } from 'lucide-react';
+import AdminApp from './admin/AdminApp';
+
+// ============================================================
+// Hash Router — renders AdminApp for #/admin routes
+// ============================================================
+function AppRouter() {
+    const [isAdmin, setIsAdmin] = useState(() => window.location.hash.startsWith('#/admin'));
+
+    useEffect(() => {
+        const handleHashChange = () => {
+            setIsAdmin(window.location.hash.startsWith('#/admin'));
+        };
+        window.addEventListener('hashchange', handleHashChange);
+        return () => window.removeEventListener('hashchange', handleHashChange);
+    }, []);
+
+    if (isAdmin) {
+        return <AdminApp />;
+    }
+
+    return <MainApp />;
+}
 
 interface VideoData {
   url: string;
@@ -14,7 +36,7 @@ interface VideoData {
   isDemo?: boolean;
 }
 
-export default function App() {
+function MainApp() {
   const [inputUrl, setInputUrl] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('shortUrl') || '';
@@ -314,3 +336,5 @@ export default function App() {
     </div>
   );
 }
+
+export default AppRouter;
