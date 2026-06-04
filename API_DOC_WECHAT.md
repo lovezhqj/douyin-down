@@ -20,6 +20,7 @@
    - [查询任务结果](#8-查询任务结果)
    - [发起视频文案提取](#9-发起视频文案提取)
    - [查询视频文案提取结果](#10-查询视频文案提取结果)
+   - [查询当日免费剩余次数](#11-查询当日免费剩余次数)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -44,6 +45,7 @@
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
 | 发起视频文案提取 | `POST` | `/api/wechat/transcript/submit` | 提交抖音链接，解析并提取语音文案（异步） |
 | 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
+| 查询当日免费剩余次数 | `GET` | `/api/quota/remaining` | 查询当日业务功能免费剩余调用次数 |
 
 **Base URL**: `https://douyin-down.fly.dev`
 
@@ -1079,6 +1081,70 @@ GET /api/wechat/transcript/result?taskId=123456
 
 ---
 
+### 11. 查询当日免费剩余次数
+
+**GET** `/api/quota/remaining`
+
+查询指定用户和业务类型在当天的免费剩余调用次数以及限额配置。
+
+#### 请求参数 (Query String)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ✅ | 微信小程序授权 code，用于后端换取 openid |
+| `bizCode` | string | ✅ | 业务代码，如 `photo_restore`、`anime_convert`、`voice_clone`、`text_to_image`、`image_to_video`、`video_transcript` |
+
+#### 请求示例
+
+```
+GET /api/quota/remaining?code=0a3Xyz000abc12def345&bizCode=photo_restore
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "data": {
+    "bizCode": "photo_restore",
+    "bizName": "老照片修复",
+    "dailyFreeLimit": 10,
+    "dailyMaxLimit": 20,
+    "todayUsed": 2,
+    "freeRemaining": 8
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `bizCode` | string | 业务代码 |
+| `bizName` | string | 业务名称 |
+| `dailyFreeLimit` | number | 每日免费调用次数上限 |
+| `dailyMaxLimit` | number | 每日最大允许调用次数上限 |
+| `todayUsed` | number | 用户当天已发起调用的总次数 |
+| `freeRemaining` | number | 当天剩余的免费调用次数 (`dailyFreeLimit - todayUsed`，最小为 0) |
+
+#### 响应 - 业务配置未找到 (404)
+
+```json
+{
+  "success": false,
+  "error": "未找到该业务功能的限额配置"
+}
+```
+
+#### 响应 - 参数错误 (400)
+
+```json
+{
+  "success": false,
+  "error": "code 参数必填"
+}
+```
+
+---
+
 ## 调用流程说明
 
 ```
@@ -1173,6 +1239,7 @@ GET /api/wechat/transcript/result?taskId=123456
 | 200 | true | 请求成功 |
 | 400 | false | 参数错误（缺少必填参数或格式不正确） |
 | 409 | false | 有正在处理中的同类任务，需等待完成 |
+| 429 | false | 达到每日调用次数上限 |
 | 500 | false | 服务器内部错误 |
 
 ---
@@ -1378,6 +1445,35 @@ export function queryTaskResult(code, bizCode) {
   return new Promise((resolve, reject) => {
     wx.request({
       url: `${BASE_URL}/api/photo/result`,
+      method: 'GET',
+      data: {
+        code: code,
+        bizCode: bizCode,
+      },
+      success(res) {
+        if (res.statusCode === 200 && res.data.success) {
+          resolve(res.data.data);
+        } else {
+          reject(new Error(res.data.error || '查询失败'));
+        }
+      },
+      fail(err) {
+        reject(new Error('网络请求失败'));
+      },
+    });
+  });
+}
+
+/**
+ * 查询当日免费剩余调用次数
+ * @param {string} code - 微信小程序授权 code
+ * @param {string} bizCode - 业务代码
+ * @returns {Promise<object>} - 返回 { bizCode, bizName, dailyFreeLimit, dailyMaxLimit, todayUsed, freeRemaining }
+ */
+export function queryRemainingQuota(code, bizCode) {
+  return new Promise((resolve, reject) => {
+    wx.request({
+      url: `${BASE_URL}/api/quota/remaining`,
       method: 'GET',
       data: {
         code: code,
