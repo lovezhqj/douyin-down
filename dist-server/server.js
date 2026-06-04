@@ -5,8 +5,8 @@ import path from 'path';
 import crypto from 'crypto';
 import multer from 'multer';
 import FormData from 'form-data';
-import { initDatabase, hasActiveTask, createTask as createDbTask, updateTaskByTaskId, getLatestTask, getTaskByTaskId, cleanStaleTasks, } from './db.js';
-import { submitPhotoRestore, submitAnimeConvert, submitVoiceClone, uploadFileV2, submitTextToImage, submitTextToSpeech, submitWatermarkRemoval, } from './runninghub.js';
+import { initDatabase, hasActiveTask, createTask as createDbTask, updateTaskByTaskId, getLatestTask, getTaskByTaskId, cleanStaleTasks, getTodayUsageCount, getQuotaConfig, getAllQuotaConfigs, upsertQuotaConfig, getTaskStats, } from './db.js';
+import { submitPhotoRestore, submitAnimeConvert, submitVoiceClone, uploadFileV2, submitTextToImage, submitTextToSpeech, submitWatermarkRemoval, submitImageToVideo, } from './runninghub.js';
 // ============================================================
 // Constants & Helpers
 // ============================================================
@@ -240,6 +240,179 @@ async function getOpenIdFromCode(code) {
         unionid: wxData.unionid,
     };
 }
+// ============================================================
+// Admin Authentication Middleware
+// ============================================================
+function adminAuthMiddleware(req, res, next) {
+    const adminToken = process.env.ADMIN_TOKEN;
+    if (!adminToken) {
+        return res.status(500).json({ success: false, error: '服务端未配置 ADMIN_TOKEN' });
+    }
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ success: false, error: '未授权：缺少 Authorization 头' });
+    }
+    const token = authHeader.substring(7);
+    if (token !== adminToken) {
+        return res.status(401).json({ success: false, error: '未授权：Token 无效' });
+    }
+    next();
+}
+// ============================================================
+// Admin API: POST /api/admin/login — 管理端登录
+// ============================================================
+app.post('/api/admin/login', (req, res) => {
+    const { token } = req.body;
+    const adminToken = process.env.ADMIN_TOKEN;
+    if (!adminToken) {
+        return res.status(500).json({ success: false, error: '服务端未配置 ADMIN_TOKEN' });
+    }
+    if (!token || typeof token !== 'string') {
+        return res.status(400).json({ success: false, error: 'token 参数必填' });
+    }
+    if (token !== adminToken) {
+        return res.status(401).json({ success: false, error: 'Token 验证失败' });
+    }
+    res.json({
+        success: true,
+        message: '登录成功',
+        data: { token },
+    });
+});
+// ============================================================
+// Admin API: GET /api/admin/dashboard — 仪表盘数据
+// ============================================================
+app.get('/api/admin/dashboard', adminAuthMiddleware, async (_req, res) => {
+    try {
+        const stats = await getTaskStats();
+        // Calculate totals
+        let totalCount = 0;
+        let todayCount = 0;
+        for (const s of stats) {
+            totalCount += s.total_count;
+            todayCount += s.today_count;
+        }
+        res.json({
+            success: true,
+            data: {
+                totalCount,
+                todayCount,
+                items: stats,
+            },
+        });
+    }
+    catch (error) {
+        console.error('[AdminDashboard] Error:', error.message);
+        res.status(500).json({ success: false, error: '获取仪表盘数据失败：' + error.message });
+    }
+});
+// ============================================================
+// Admin API: GET /api/admin/quota — 获取所有限额配置
+// ============================================================
+app.get('/api/admin/quota', adminAuthMiddleware, async (_req, res) => {
+    try {
+        const configs = await getAllQuotaConfigs();
+        res.json({ success: true, data: configs });
+    }
+    catch (error) {
+        console.error('[AdminQuota] Error:', error.message);
+        res.status(500).json({ success: false, error: '获取限额配置失败：' + error.message });
+    }
+});
+// ============================================================
+// Admin API: PUT /api/admin/quota — 更新限额配置
+// ============================================================
+app.put('/api/admin/quota', adminAuthMiddleware, async (req, res) => {
+    try {
+        const { bizCode, bizName, dailyFreeLimit, dailyMaxLimit } = req.body;
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (!bizName || typeof bizName !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizName 参数必填' });
+        }
+        if (typeof dailyFreeLimit !== 'number' || dailyFreeLimit < 0) {
+            return res.status(400).json({ success: false, error: 'dailyFreeLimit 必须为非负整数' });
+        }
+        if (typeof dailyMaxLimit !== 'number' || dailyMaxLimit < 1) {
+            return res.status(400).json({ success: false, error: 'dailyMaxLimit 必须为正整数' });
+        }
+        if (dailyMaxLimit <= dailyFreeLimit) {
+            return res.status(400).json({ success: false, error: '每日最大调用次数必须大于每日免费调用次数' });
+        }
+        const config = await upsertQuotaConfig(bizCode, bizName, dailyFreeLimit, dailyMaxLimit);
+        console.log(`[AdminQuota] Updated quota for ${bizCode}: free=${dailyFreeLimit}, max=${dailyMaxLimit}`);
+        res.json({ success: true, message: '限额配置已保存', data: config });
+    }
+    catch (error) {
+        console.error('[AdminQuota] Error:', error.message);
+        res.status(500).json({ success: false, error: '保存限额配置失败：' + error.message });
+    }
+});
+// ============================================================
+// Helper: Check daily quota for a user + biz_code
+// ============================================================
+/**
+ * Check if a user has exceeded the daily max quota for a given biz_code.
+ * Returns null if within quota, or an error message string if exceeded.
+ */
+async function checkDailyQuota(openid, bizCode) {
+    const quotaConfig = await getQuotaConfig(bizCode);
+    if (!quotaConfig) {
+        // No quota config means no limit
+        return null;
+    }
+    const todayCount = await getTodayUsageCount(openid, bizCode);
+    if (todayCount >= quotaConfig.daily_max_limit) {
+        return `今日调用次数已达上限（最大 ${quotaConfig.daily_max_limit} 次/天），请明天再试`;
+    }
+    return null;
+}
+// ============================================================
+// API: GET /api/quota/remaining — 查询当日免费剩余调用次数
+// ============================================================
+app.get('/api/quota/remaining', async (req, res) => {
+    try {
+        const { code, bizCode } = req.query;
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+        }
+        const quotaConfig = await getQuotaConfig(bizCode);
+        if (!quotaConfig) {
+            return res.status(404).json({ success: false, error: '未找到该业务功能的限额配置' });
+        }
+        const todayCount = await getTodayUsageCount(openid, bizCode);
+        const remaining = Math.max(0, quotaConfig.daily_free_limit - todayCount);
+        console.log(`[QuotaRemaining] openid=${openid}, bizCode=${bizCode}, todayCount=${todayCount}, freeLimit=${quotaConfig.daily_free_limit}, remaining=${remaining}`);
+        res.json({
+            success: true,
+            data: {
+                bizCode,
+                bizName: quotaConfig.biz_name,
+                dailyFreeLimit: quotaConfig.daily_free_limit,
+                dailyMaxLimit: quotaConfig.daily_max_limit,
+                todayUsed: todayCount,
+                freeRemaining: remaining,
+            },
+        });
+    }
+    catch (error) {
+        console.error('[QuotaRemaining] Error:', error.message);
+        res.status(500).json({ success: false, error: '查询失败：' + (error.message || '未知错误') });
+    }
+});
 // ============================================================
 // API: POST /api/wechat/login — 微信小程序登录（code 换取 openid）
 // ============================================================
@@ -661,6 +834,11 @@ app.post('/api/photo/restore', async (req, res) => {
                 error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
             });
         }
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, bizCode);
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
         // Submit photo restoration to RunningHub with optional parameters
         const taskId = await submitPhotoRestore(imageUrl, {
             cnStrength: typeof cnStrength === 'number' ? cnStrength : undefined,
@@ -723,6 +901,11 @@ app.post('/api/photo/anime', async (req, res) => {
                 success: false,
                 error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
             });
+        }
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, bizCode);
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
         }
         // Submit anime conversion to RunningHub with optional prompt
         const taskId = await submitAnimeConvert(imageUrl, {
@@ -789,6 +972,11 @@ app.post('/api/photo/remove_watermark', async (req, res) => {
                 error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
             });
         }
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, bizCode);
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
         // Submit watermark removal task to RunningHub
         const taskId = await submitWatermarkRemoval(imageUrl);
         // Save to database
@@ -847,6 +1035,11 @@ app.post('/api/photo/text_to_image', async (req, res) => {
                 success: false,
                 error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
             });
+        }
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'text_to_image');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
         }
         // Submit text-to-image task to RunningHub with optional parameters
         const taskId = await submitTextToImage({
@@ -920,6 +1113,11 @@ app.post('/api/voice/clone', async (req, res) => {
                 error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
             });
         }
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'voice_clone');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
         // Submit voice clone to RunningHub with optional parameters
         const taskId = await submitVoiceClone(audioUrl, text, {
             emotion: typeof emotion === 'string' ? emotion : undefined,
@@ -990,6 +1188,11 @@ app.post('/api/voice/text_to_speech', async (req, res) => {
                 error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
             });
         }
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'text_to_speech');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
         // Submit text-to-speech to RunningHub with optional parameters
         const taskId = await submitTextToSpeech({
             text,
@@ -1010,6 +1213,81 @@ app.post('/api/voice/text_to_speech', async (req, res) => {
     }
     catch (error) {
         console.error('[TextToSpeech] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+// ============================================================
+// API: POST /api/video/image_to_video — 发起图生视频任务 (Wan2.2)
+// ============================================================
+app.post('/api/video/image_to_video', async (req, res) => {
+    try {
+        const { code, bizCode, imageUrl, positivePrompt, negativePrompt, maxResolution, duration, frameRate, seed, } = req.body;
+        // Validate required fields
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'image_to_video') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 image_to_video' });
+        }
+        if (!imageUrl || typeof imageUrl !== 'string') {
+            return res.status(400).json({ success: false, error: 'imageUrl 参数必填' });
+        }
+        // Validate imageUrl format
+        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'imageUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+        // Exchange code for openid
+        let openid;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        }
+        catch (err) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+        }
+        console.log(`[ImageToVideo] Request from openid=${openid}, bizCode=${bizCode}`);
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, 'image_to_video');
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'image_to_video');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
+        // Submit image-to-video task to RunningHub with optional parameters
+        const taskId = await submitImageToVideo(imageUrl, {
+            positivePrompt: typeof positivePrompt === 'string' ? positivePrompt : undefined,
+            negativePrompt: typeof negativePrompt === 'string' ? negativePrompt : undefined,
+            maxResolution: typeof maxResolution === 'number' ? maxResolution : undefined,
+            duration: typeof duration === 'number' ? duration : undefined,
+            frameRate: typeof frameRate === 'number' ? frameRate : undefined,
+            seed: typeof seed === 'number' ? seed : undefined,
+        });
+        // Save to database
+        const task = await createDbTask(openid, bizCode, taskId, imageUrl);
+        console.log(`[ImageToVideo] Task created: id=${task.id}, taskId=${taskId}`);
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    }
+    catch (error) {
+        console.error('[ImageToVideo] Error:', error.message);
         res.status(500).json({
             success: false,
             error: '提交任务失败：' + (error.message || '未知错误'),
@@ -1046,6 +1324,11 @@ app.post('/api/wechat/transcript/submit', async (req, res) => {
                 success: false,
                 error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
             });
+        }
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'video_transcript');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
         }
         // 1. Parse Douyin URL to get normalized video link
         let parsedResult;
@@ -1308,6 +1591,9 @@ app.get('/api/photo/result', async (req, res) => {
                 }
                 if (bizCode === 'text_to_image') {
                     responseData.prompt = task.input_image_url;
+                }
+                if (bizCode === 'image_to_video') {
+                    responseData.outputVideoUrl = task.output_image_url;
                 }
                 responseData.outputImageUrl = task.output_image_url;
                 responseData.inputImageUrl = task.input_image_url;

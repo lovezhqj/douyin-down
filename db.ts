@@ -281,7 +281,7 @@ export async function getTodayUsageCount(openid: string, bizCode: string): Promi
     const result = await query(
         `SELECT COUNT(*) AS cnt FROM ai_tasks
          WHERE openid = $1 AND biz_code = $2
-           AND created_at >= (NOW() AT TIME ZONE 'Asia/Shanghai')::date AT TIME ZONE 'Asia/Shanghai'`,
+           AND created_at >= ((NOW() AT TIME ZONE 'Asia/Shanghai')::date || ' 00:00:00 Asia/Shanghai')::timestamptz`,
         [openid, bizCode]
     );
     return parseInt(result.rows[0].cnt, 10);
@@ -353,7 +353,7 @@ export async function getTaskStats(): Promise<Array<{
          LEFT JOIN (
             SELECT biz_code, COUNT(*) AS cnt
             FROM ai_tasks
-            WHERE created_at >= (NOW() AT TIME ZONE 'Asia/Shanghai')::date AT TIME ZONE 'Asia/Shanghai'
+            WHERE created_at >= ((NOW() AT TIME ZONE 'Asia/Shanghai')::date || ' 00:00:00 Asia/Shanghai')::timestamptz
             GROUP BY biz_code
          ) today ON today.biz_code = qc.biz_code
          ORDER BY qc.id ASC`

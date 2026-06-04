@@ -688,3 +688,119 @@ export async function submitWatermarkRemoval(imageUrl) {
     console.log('[RunningHub] Watermark removal task created:', taskResult.taskId);
     return taskResult.taskId;
 }
+// ============================================================
+// Image-to-Video (图生视频 Wan2.2) Workflow
+// ============================================================
+/**
+ * Image-to-Video workflow configuration (Wan2.2 I2V).
+ * The workflowId and nodeInfoList are configured via environment variables.
+ *
+ * Workflow node mapping (from wan2.2图生视频_api.json):
+ * Node 114 (LoadImage)              — fieldName: "image"            — 上传的参考图片
+ * Node 154 (WanVideoTextEncode)     — fieldName: "positive_prompt"  — 正向提示词
+ * Node 154 (WanVideoTextEncode)     — fieldName: "negative_prompt"  — 负向提示词
+ * Node 112 (Int)                    — fieldName: "value"            — 最大分辨率（默认912）
+ * Node 125 (Int)                    — fieldName: "value"            — 秒数（默认5）
+ * Node 124 (Int)                    — fieldName: "value"            — 帧率（默认16）
+ * Node 144 (WanVideoSampler)        — fieldName: "seed"             — 随机种子
+ */
+export function getImageToVideoConfig() {
+    // The webapp/workflow ID for Image-to-Video — wan2.2 图生视频
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_IMAGE_TO_VIDEO || '1893899363629051906';
+    return {
+        workflowId,
+        // Primary image input node
+        imageNodeId: '114',
+        imageFieldName: 'image',
+        // Text prompts node
+        textEncodeNodeId: '154',
+        positivePromptFieldName: 'positive_prompt',
+        positivePromptDefault: '这个年轻女人站了起来，抬起双手转圈转身旋转，镜头拉近人物的五官，镜头全程跟随',
+        negativePromptFieldName: 'negative_prompt',
+        negativePromptDefault: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走',
+        // Max resolution node
+        maxResolutionNodeId: '112',
+        maxResolutionFieldName: 'value',
+        maxResolutionDefault: 912,
+        // Duration in seconds node
+        durationNodeId: '125',
+        durationFieldName: 'value',
+        durationDefault: 5,
+        // Frame rate node
+        frameRateNodeId: '124',
+        frameRateFieldName: 'value',
+        frameRateDefault: 16,
+        // Seed node (WanVideoSampler)
+        seedNodeId: '144',
+        seedFieldName: 'seed',
+    };
+}
+/**
+ * Execute the full image-to-video flow:
+ * 1. Upload image to RunningHub
+ * 2. Create task with the uploaded image, prompts, and parameters via V2 API
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitImageToVideo(imageUrl, options = {}) {
+    // Step 1: Upload image
+    const uploadResult = await uploadImage(imageUrl);
+    console.log('[RunningHub] Image uploaded for image-to-video:', uploadResult.fileName);
+    // Step 2: Build nodeInfoList from workflow configuration
+    const config = getImageToVideoConfig();
+    const nodeInfoList = [
+        // Required: the input image
+        {
+            nodeId: config.imageNodeId,
+            fieldName: config.imageFieldName,
+            fieldValue: uploadResult.fileName,
+        },
+        // Positive prompt
+        {
+            nodeId: config.textEncodeNodeId,
+            fieldName: config.positivePromptFieldName,
+            fieldValue: options.positivePrompt ?? config.positivePromptDefault,
+        },
+        // Negative prompt
+        {
+            nodeId: config.textEncodeNodeId,
+            fieldName: config.negativePromptFieldName,
+            fieldValue: options.negativePrompt ?? config.negativePromptDefault,
+        },
+    ];
+    // Optional: max resolution
+    const maxResolution = options.maxResolution ?? config.maxResolutionDefault;
+    nodeInfoList.push({
+        nodeId: config.maxResolutionNodeId,
+        fieldName: config.maxResolutionFieldName,
+        fieldValue: String(maxResolution),
+    });
+    // Optional: duration in seconds
+    const duration = options.duration ?? config.durationDefault;
+    nodeInfoList.push({
+        nodeId: config.durationNodeId,
+        fieldName: config.durationFieldName,
+        fieldValue: String(duration),
+    });
+    // Optional: frame rate
+    const frameRate = options.frameRate ?? config.frameRateDefault;
+    nodeInfoList.push({
+        nodeId: config.frameRateNodeId,
+        fieldName: config.frameRateFieldName,
+        fieldValue: String(frameRate),
+    });
+    // Optional: seed
+    const seed = options.seed !== undefined && options.seed >= 0
+        ? options.seed
+        : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    nodeInfoList.push({
+        nodeId: config.seedNodeId,
+        fieldName: config.seedFieldName,
+        fieldValue: String(seed),
+    });
+    console.log('[RunningHub] Image to Video nodeInfoList:', JSON.stringify(nodeInfoList));
+    // Step 3: Create task using V1 API (服务端调用 apiType=5)
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Image to Video task created:', taskResult.taskId);
+    return taskResult.taskId;
+}
