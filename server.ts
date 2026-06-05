@@ -766,28 +766,74 @@ async function getDouyinVideoUrl(url: string): Promise<{ videoSrc: string; cover
 }
 
 // ============================================================
-// API: POST /api/parse — 解析抖音视频链接
+// API: POST /api/parse — 视频去水印（解析抖音视频链接）
 // ============================================================
 app.post('/api/parse', async (req, res) => {
     try {
-        const { url } = req.body;
-        if (!url) {
-            return res.status(400).json({ error: 'URL is required' });
+        const { code, bizCode, url } = req.body;
+
+        // Validate required fields
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'video_parse') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 video_parse' });
+        }
+        if (!url || typeof url !== 'string') {
+            return res.status(400).json({ success: false, error: 'url 参数必填（抖音视频链接）' });
         }
 
+        // Exchange code for openid
+        let openid: string;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        } catch (err: any) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+        }
+
+        console.log(`[VideoParse] Request from openid=${openid}, bizCode=${bizCode}, url=${url}`);
+
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'video_parse');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
+
+        // Parse Douyin video URL (synchronous processing)
         const result = await getDouyinVideoUrl(url);
+
+        // Generate a unique task ID for the record
+        const taskId = `parse_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+
+        // Write a SUCCESS record directly (synchronous task, no async processing)
+        const task = await createDbTask(openid, 'video_parse', taskId, url);
+        await updateTaskByTaskId(taskId, 'SUCCESS', {
+            url: result.videoSrc,
+            cover: result.coverSrc,
+            desc: result.desc,
+        }, result.videoSrc, null);
+
+        console.log(`[VideoParse] Task created and completed: id=${task.id}, taskId=${taskId}`);
 
         res.json({
             success: true,
             data: {
+                taskId: taskId,
                 url: result.videoSrc,
                 cover: result.coverSrc,
                 desc: result.desc,
             },
         });
     } catch (error: any) {
-        console.error('[Parse] Unhandled error:', error.message);
-        res.status(500).json({ error: '解析视频失败：' + (error.message || '未知错误') });
+        console.error('[VideoParse] Unhandled error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '解析视频失败：' + (error.message || '未知错误'),
+        });
     }
 });
 

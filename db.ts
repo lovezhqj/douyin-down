@@ -97,6 +97,7 @@ const DEFAULT_QUOTA_CONFIGS = [
     { bizCode: 'remove_watermark', bizName: '图片去水印', dailyFreeLimit: 5, dailyMaxLimit: 20 },
     { bizCode: 'image_to_video', bizName: '图生视频', dailyFreeLimit: 5, dailyMaxLimit: 20 },
     { bizCode: 'video_transcript', bizName: '视频文案提取', dailyFreeLimit: 5, dailyMaxLimit: 20 },
+    { bizCode: 'video_parse', bizName: '视频去水印', dailyFreeLimit: 5, dailyMaxLimit: 20 },
 ];
 
 /**

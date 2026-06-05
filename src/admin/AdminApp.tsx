@@ -39,6 +39,7 @@ const BIZ_ICONS: Record<string, React.ReactNode> = {
     remove_watermark: <Eraser size={20} />,
     image_to_video: <Video size={20} />,
     video_transcript: <FileText size={20} />,
+    video_parse: <Video size={20} />,
 };
 
 const BIZ_GRADIENTS: Record<string, string> = {
@@ -50,6 +51,7 @@ const BIZ_GRADIENTS: Record<string, string> = {
     remove_watermark: 'from-indigo-500 to-violet-400',
     image_to_video: 'from-fuchsia-500 to-purple-400',
     video_transcript: 'from-sky-500 to-blue-400',
+    video_parse: 'from-red-500 to-orange-400',
 };
 
 // ============================================================

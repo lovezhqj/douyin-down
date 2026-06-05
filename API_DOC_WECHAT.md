@@ -20,7 +20,8 @@
    - [查询任务结果](#8-查询任务结果)
    - [发起视频文案提取](#9-发起视频文案提取)
    - [查询视频文案提取结果](#10-查询视频文案提取结果)
-   - [查询当日免费剩余次数](#11-查询当日免费剩余次数)
+   - [发起视频去水印](#12-发起视频去水印)
+   - [查询当日免费剩余次数](#13-查询当日免费剩余次数)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -45,6 +46,7 @@
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
 | 发起视频文案提取 | `POST` | `/api/wechat/transcript/submit` | 提交抖音链接，解析并提取语音文案（异步） |
 | 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
+| 发起视频去水印 | `POST` | `/api/parse` | 解析抖音视频链接，获取无水印视频地址（同步处理） |
 | 查询当日免费剩余次数 | `GET` | `/api/quota/remaining` | 查询当日业务功能免费剩余调用次数 |
 
 **Base URL**: `https://douyin-down.fly.dev`
@@ -1081,7 +1083,100 @@ GET /api/wechat/transcript/result?taskId=123456
 
 ---
 
-### 11. 查询当日免费剩余次数
+### 12. 发起视频去水印
+
+**POST** `/api/parse`
+
+解析抖音视频链接，去除水印获取无水印高清视频地址。此接口为**同步处理**，直接返回解析结果，无需轮询。
+
+> [!NOTE]
+> 与其他 AI 任务接口不同，视频去水印是同步处理的，接口会在解析完成后直接返回结果。但同样需要传入 `code` 和 `bizCode`，受每日调用次数限制。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ✅ | 微信小程序授权 code，用于后端换取 openid |
+| `bizCode` | string | ✅ | 业务代码，视频去水印固定为 `video_parse` |
+| `url` | string | ✅ | 抖音视频链接（支持短链接和完整链接） |
+
+#### 请求示例
+
+```json
+{
+  "code": "0a3Xyz000abc12def345",
+  "bizCode": "video_parse",
+  "url": "https://v.douyin.com/abc123/"
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "data": {
+    "taskId": "parse_1717171717171_a1b2c3",
+    "url": "https://www.douyin.com/aweme/v1/play/?video_id=...",
+    "cover": "https://p3-sign.douyinpic.com/...",
+    "desc": "抖音视频描述文字"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `taskId` | string | 任务记录 ID |
+| `url` | string | 无水印视频下载地址 |
+| `cover` | string | 视频封面图 URL |
+| `desc` | string | 视频描述/标题 |
+
+> [!TIP]
+> 获取到的视频 URL 可直接使用 `GET /api/proxy?url=视频URL&download=1` 代理下载。
+
+#### 响应 - 达到次数上限 (429)
+
+```json
+{
+  "success": false,
+  "error": "今日调用次数已达上限（最大 20 次/天），请明天再试"
+}
+```
+
+#### 响应 - 参数错误 (400)
+
+```json
+{
+  "success": false,
+  "error": "code 参数必填"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "url 参数必填（抖音视频链接）"
+}
+```
+
+#### 响应 - 服务器错误 (500)
+
+```json
+{
+  "success": false,
+  "error": "解析视频失败：具体错误信息"
+}
+```
+
+---
+
+### 13. 查询当日免费剩余次数
 
 **GET** `/api/quota/remaining`
 
@@ -1092,7 +1187,7 @@ GET /api/wechat/transcript/result?taskId=123456
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `code` | string | ✅ | 微信小程序授权 code，用于后端换取 openid |
-| `bizCode` | string | ✅ | 业务代码，如 `photo_restore`、`anime_convert`、`voice_clone`、`text_to_image`、`image_to_video`、`video_transcript` |
+| `bizCode` | string | ✅ | 业务代码，如 `photo_restore`、`anime_convert`、`voice_clone`、`text_to_image`、`image_to_video`、`video_transcript`、`video_parse` |
 
 #### 请求示例
 
@@ -1224,6 +1319,7 @@ GET /api/quota/remaining?code=0a3Xyz000abc12def345&bizCode=photo_restore
 | `voice_clone` | 语音克隆 | ✅ 已上线 |
 | `text_to_image` | 全能文生图 | ✅ 已上线 |
 | `image_to_video` | 图生视频 (Wan2.2) | ✅ 已上线 |
+| `video_parse` | 视频去水印 | ✅ 已上线 |
 | `photo_expand` | 照片扩图 | 🔜 计划中 |
 | `photo_colorize` | 黑白照片上色 | 🔜 计划中 |
 
