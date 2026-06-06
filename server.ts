@@ -28,6 +28,7 @@ import {
     submitTextToSpeech,
     submitWatermarkRemoval,
     submitImageToVideo,
+    submitNovelToScript,
 } from './runninghub.js';
 
 // ============================================================
@@ -1617,6 +1618,87 @@ app.post('/api/wechat/transcript/submit', async (req, res) => {
 });
 
 // ============================================================
+// API: POST /api/novel/to_script — 发起小说改漫剧剧本任务
+// ============================================================
+app.post('/api/novel/to_script', async (req, res) => {
+    try {
+        const {
+            code,
+            bizCode,
+            novelText,
+            temperature,
+            seed,
+        } = req.body;
+
+        // Validate required fields
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+        if (!bizCode || typeof bizCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'bizCode 参数必填' });
+        }
+        if (bizCode !== 'novel_to_script') {
+            return res.status(400).json({ success: false, error: 'bizCode 必须为 novel_to_script' });
+        }
+        if (!novelText || typeof novelText !== 'string') {
+            return res.status(400).json({ success: false, error: 'novelText 参数必填且必须为非空字符串' });
+        }
+
+        // Exchange code for openid
+        let openid: string;
+        try {
+            const wxData = await getOpenIdFromCode(code);
+            openid = wxData.openid;
+        } catch (err: any) {
+            return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+        }
+
+        console.log(`[NovelToScript] Request from openid=${openid}, bizCode=${bizCode}`);
+
+        // Check for active tasks — concurrent control
+        const active = await hasActiveTask(openid, 'novel_to_script');
+        if (active) {
+            return res.status(409).json({
+                success: false,
+                error: '您有一个正在处理中的任务，请等待处理完成后再次提交',
+            });
+        }
+
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'novel_to_script');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
+
+        // Submit novel-to-script task to RunningHub with optional parameters
+        const taskId = await submitNovelToScript({
+            novelText,
+            temperature: typeof temperature === 'number' ? temperature : undefined,
+            seed: typeof seed === 'number' ? seed : undefined,
+        });
+
+        // Save to database, storing the novel text in input_image_url field
+        const task = await createDbTask(openid, bizCode, taskId, novelText);
+        console.log(`[NovelToScript] Task created: id=${task.id}, taskId=${taskId}`);
+
+        res.json({
+            success: true,
+            message: '任务已提交，正在后台处理中，请稍后查询结果',
+            data: {
+                taskId: taskId,
+                status: 'PENDING',
+            },
+        });
+    } catch (error: any) {
+        console.error('[NovelToScript] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '提交任务失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+
+// ============================================================
 // API: POST /api/webhook/runninghub — 接收 RunningHub 回调
 // ============================================================
 app.post('/api/webhook/runninghub', async (req, res) => {
@@ -1799,6 +1881,10 @@ app.get('/api/photo/result', async (req, res) => {
                 }
                 if (bizCode === 'image_to_video') {
                     responseData.outputVideoUrl = task.output_image_url;
+                }
+                if (bizCode === 'novel_to_script') {
+                    responseData.novelText = task.input_image_url;
+                    responseData.outputFileUrl = task.output_image_url;
                 }
                 responseData.outputImageUrl = task.output_image_url;
                 responseData.inputImageUrl = task.input_image_url;

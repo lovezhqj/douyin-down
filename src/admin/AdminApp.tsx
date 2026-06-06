@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
     LayoutDashboard, Settings, LogOut, Shield, Menu, X,
-    TrendingUp, Calendar, Image, Mic, Video, Type, Wand2, Eraser, FileText
+    TrendingUp, Calendar, Image, Mic, Video, Type, Wand2, Eraser, FileText, BookOpen
 } from 'lucide-react';
 
 // ============================================================
@@ -40,6 +40,7 @@ const BIZ_ICONS: Record<string, React.ReactNode> = {
     image_to_video: <Video size={20} />,
     video_transcript: <FileText size={20} />,
     video_parse: <Video size={20} />,
+    novel_to_script: <BookOpen size={20} />,
 };
 
 const BIZ_GRADIENTS: Record<string, string> = {
@@ -52,6 +53,7 @@ const BIZ_GRADIENTS: Record<string, string> = {
     image_to_video: 'from-fuchsia-500 to-purple-400',
     video_transcript: 'from-sky-500 to-blue-400',
     video_parse: 'from-red-500 to-orange-400',
+    novel_to_script: 'from-amber-500 to-yellow-400',
 };
 
 // ============================================================
