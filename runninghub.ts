@@ -1097,7 +1097,7 @@ export async function submitImageToVideo(
  */
 export function getNovelToScriptConfig() {
     // The workflow ID for Novel to Comic Drama Script — 小说改漫剧剧本
-    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_NOVEL_TO_SCRIPT || '2007883717229944833';
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_NOVEL_TO_SCRIPT || '2010703685424259074';
 
     return {
         workflowId,
