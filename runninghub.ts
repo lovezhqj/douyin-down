@@ -1103,7 +1103,7 @@ export function getNovelToScriptConfig() {
         workflowId,
         // Novel text input node
         textNodeId: '22',
-        textFieldName: 'input_text',
+        textFieldName: 'default_value',
         // LLM config node (optional overrides)
         llmNodeId: '4',
         temperatureFieldName: 'temperature',
