@@ -17,6 +17,7 @@
    - [发起文本转语音](#7-发起文本转语音)
    - [发起图片去水印](#75-发起图片去水印)
    - [发起图生视频](#76-发起图生视频)
+   - [发起小说改漫剧剧本](#77-发起小说改漫剧剧本)
    - [查询任务结果](#8-查询任务结果)
    - [发起视频文案提取](#9-发起视频文案提取)
    - [查询视频文案提取结果](#10-查询视频文案提取结果)
@@ -43,6 +44,7 @@
 | 发起文本转语音 | `POST` | `/api/voice/text_to_speech` | 提交文本转语音任务（异步处理） |
 | 发起图片去水印 | `POST` | `/api/photo/remove_watermark` | 提交图片去水印任务（异步处理） |
 | 发起图生视频 | `POST` | `/api/video/image_to_video` | 提交图生视频任务（Wan2.2，异步处理） |
+| 发起小说改漫剧剧本 | `POST` | `/api/novel/to_script` | 提交小说章节文本，异步生成漫剧剧本（工作流API） |
 | 查询任务结果 | `GET` | `/api/photo/result` | 查询最新任务的处理状态和结果 |
 | 发起视频文案提取 | `POST` | `/api/wechat/transcript/submit` | 提交抖音链接，解析并提取语音文案（异步） |
 | 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
@@ -762,6 +764,110 @@ Content-Type: application/json
 
 ---
 
+### 7.7. 发起小说改漫剧剧本
+
+**POST** `/api/novel/to_script`
+
+提交一段小说章节文本，服务端通过 RunningHub 工作流 API 调用 LLM 将小说内容异步改编为漫剧剧本。任务完成后可通过 **查询任务结果** 接口获取生成的剧本文件 URL。
+
+> [!NOTE]
+> 这是一个工作流 API 调用（apiType=5），非 AI 接口调用。任务处理时间取决于小说章节文本的长度，通常需要 1~5 分钟。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ✅ | 微信小程序授权 code，用于后端换取 openid |
+| `bizCode` | string | ✅ | 业务代码，小说改漫剧剧本固定为 `novel_to_script` |
+| `novelText` | string | ✅ | 小说章节文本内容（支持长文本） |
+| `temperature` | number | ❌ | LLM 温度参数，控制生成创意度。范围 0~1，值越大越有创意。默认 `0.6` |
+| `seed` | number | ❌ | 随机种子（正整数）。不传或传入小于 0 时将自动在服务端生成随机种子 |
+
+#### 请求示例
+
+```json
+{
+  "code": "0a3Xyz000abc12def345",
+  "bizCode": "novel_to_script",
+  "novelText": "第1章 各种偏方\n\n为了怀孕，村里女人有着各种各样的偏方。\n\n有人买了驴回家，有人找村医寻求帮助……"
+}
+```
+
+带自定义参数的请求示例：
+
+```json
+{
+  "code": "0a3Xyz000abc12def345",
+  "bizCode": "novel_to_script",
+  "novelText": "第1章 各种偏方\n\n为了怀孕，村里女人有着各种各样的偏方。\n\n有人买了驴回家，有人找村医寻求帮助……",
+  "temperature": 0.8,
+  "seed": 42
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "任务已提交，正在后台处理中，请稍后查询结果",
+  "data": {
+    "taskId": "rh_task_1234567890",
+    "status": "PENDING"
+  }
+}
+```
+
+#### 响应 - 有正在处理的任务 (409)
+
+```json
+{
+  "success": false,
+  "error": "您有一个正在处理中的任务，请等待处理完成后再次提交"
+}
+```
+
+> [!WARNING]
+> **并发限制**：同一用户（基于 code 换取的 openid）+ 同一业务代码（bizCode）只能有一个进行中的任务。必须等上一个任务完成（SUCCESS 或 FAILED）后才能再次提交。
+
+#### 响应 - 每日调用次数用尽 (429)
+
+```json
+{
+  "success": false,
+  "error": "今日调用次数已达上限（最大 N 次/天），请明天再试"
+}
+```
+
+#### 响应 - 参数错误 (400)
+
+```json
+{
+  "success": false,
+  "error": "novelText 参数必填且必须为非空字符串"
+}
+```
+
+#### 响应 - 服务器错误 (500)
+
+```json
+{
+  "success": false,
+  "error": "提交任务失败：具体错误信息"
+}
+```
+
+> [!TIP]
+> 建议传入完整的小说章节内容（含章节标题），以便 LLM 更好地理解上下文并生成连贯的漫剧剧本。温度值 0.6 为推荐值，适合大部分场景。
+
+---
+
 ### 8. 查询任务结果
 
 **GET** `/api/photo/result`
@@ -773,7 +879,7 @@ Content-Type: application/json
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `code` | string | ✅ | 微信小程序授权 code，用于后端换取 openid |
-| `bizCode` | string | ✅ | 业务代码，如 `photo_restore`、`anime_convert`、`voice_clone`、`text_to_image`、`image_to_video` |
+| `bizCode` | string | ✅ | 业务代码，如 `photo_restore`、`anime_convert`、`voice_clone`、`text_to_image`、`image_to_video`、`novel_to_script` |
 
 #### 请求示例
 
@@ -877,6 +983,27 @@ GET /api/photo/result?code=0a3Xyz000abc12def345&bizCode=photo_restore
 
 > [!TIP]
 > 对于图生视频任务，会额外返回 `outputVideoUrl` 字段。`outputImageUrl` 也包含相同的视频链接作为备用。
+
+##### 5. 小说改漫剧剧本任务 (当 bizCode 为 novel_to_script 时)
+```json
+{
+  "success": true,
+  "data": {
+    "status": "SUCCESS",
+    "taskId": "rh_task_1234567890",
+    "message": "任务处理完成",
+    "novelText": "第1章 各种偏方\n\n为了怀孕，村里女人有着各种各样的偏方。",
+    "outputFileUrl": "https://runninghub.cn/output/script-output.txt",
+    "outputImageUrl": "https://runninghub.cn/output/script-output.txt",
+    "inputImageUrl": "第1章 各种偏方\n\n为了怀孕，村里女人有着各种各样的偏方。",
+    "createdAt": "2026-06-06T00:00:00.000Z",
+    "updatedAt": "2026-06-06T00:03:30.000Z"
+  }
+}
+```
+
+> [!TIP]
+> 对于小说改漫剧剧本任务，会额外返回 `novelText`（原始输入文本）和 `outputFileUrl`（生成的剧本文件 URL）。`outputImageUrl` 也包含相同的值作为备用。
 
 ##### 4. 语音类任务 (如 voice_clone)
 ```json
