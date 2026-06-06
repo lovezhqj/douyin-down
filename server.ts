@@ -1585,82 +1585,26 @@ app.post('/api/wechat/transcript/submit', async (req, res) => {
             });
         }
 
-        // 2. Download video file to memory buffer
-        console.log('[TranscriptSubmit] Downloading video:', parsedResult.videoSrc.substring(0, 100) + '...');
-        let videoBuffer: Buffer;
-        try {
-            const downloadRes = await axios.get(parsedResult.videoSrc, {
-                responseType: 'arraybuffer',
-                headers: {
-                    'User-Agent': MOBILE_UA,
-                    'Referer': 'https://www.douyin.com/',
-                },
-                timeout: 120000,
-                maxRedirects: 10,
-            });
-            videoBuffer = Buffer.from(downloadRes.data);
-            console.log(`[TranscriptSubmit] Downloaded video size: ${videoBuffer.length} bytes`);
-        } catch (err: any) {
-            console.error('[TranscriptSubmit] Download video failed:', err.message);
-            return res.status(500).json({
-                success: false,
-                error: '下载视频失败：' + (err.message || '网络连接超时'),
-            });
-        }
+        // 2. Generate a unique task ID for the record
+        const taskId = `transcript_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
-        // 3. Upload video buffer to VoiceText AI (async mode)
-        console.log('[TranscriptSubmit] Uploading video to VoiceText AI...');
-        const apiKey = process.env.VOICETEXT_API_KEY || 'vtt_8d64f6c85f80d101f295fd587ef0f1a46e74105ed84ea529';
-        
-        let voiceTextTaskId: string;
-        try {
-            const form = new FormData();
-            form.append('file', videoBuffer, {
-                filename: 'douyin_video.mp4',
-                contentType: 'video/mp4',
-            });
-            form.append('async', 'true');
+        // 3. Write a SUCCESS record directly to the database (synchronous parsing)
+        const task = await createDbTask(openid, 'video_transcript', taskId, url);
+        await updateTaskByTaskId(taskId, 'SUCCESS', {
+            url: parsedResult.videoSrc,
+            cover: parsedResult.coverSrc,
+            desc: parsedResult.desc,
+        }, parsedResult.videoSrc, null);
 
-            const uploadRes = await axios.post('https://video.kkdmx.com/openapi/v1/transcript/upload', form, {
-                headers: {
-                    ...form.getHeaders(),
-                    'X-API-Key': apiKey,
-                },
-                timeout: 60000,
-            });
-
-            if (uploadRes.data && uploadRes.data.success) {
-                voiceTextTaskId = uploadRes.data.data.id.toString();
-                console.log('[TranscriptSubmit] VoiceText upload success. TaskID:', voiceTextTaskId);
-            } else {
-                const errMsg = uploadRes.data?.error || '服务器返回错误';
-                console.error('[TranscriptSubmit] VoiceText upload failed:', errMsg);
-                return res.status(500).json({
-                    success: false,
-                    error: '提取任务提交失败：' + errMsg,
-                });
-            }
-        } catch (err: any) {
-            const errMsg = err.response?.data?.error || err.message;
-            console.error('[TranscriptSubmit] VoiceText upload network error:', errMsg);
-            return res.status(500).json({
-                success: false,
-                error: '发起提取任务失败：' + errMsg,
-            });
-        }
-
-        // 4. Save task record in our database
-        // We reuse createDbTask with bizCode = 'video_transcript'
-        // input_image_url will store the user's input URL (抖音链接)
-        const task = await createDbTask(openid, 'video_transcript', voiceTextTaskId, url);
-        console.log(`[TranscriptSubmit] Task saved in DB. ID: ${task.id}, TaskID: ${voiceTextTaskId}`);
+        console.log(`[TranscriptSubmit] Task completed immediately: id=${task.id}, taskId=${taskId}`);
 
         res.json({
             success: true,
-            message: '任务已提交，正在后台处理中，请稍后查询结果',
             data: {
-                taskId: voiceTextTaskId,
-                status: 'PENDING',
+                taskId: taskId,
+                url: parsedResult.videoSrc,
+                cover: parsedResult.coverSrc,
+                desc: parsedResult.desc,
             },
         });
     } catch (error: any) {

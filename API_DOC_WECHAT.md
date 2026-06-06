@@ -920,7 +920,7 @@ GET /api/photo/result?code=0a3Xyz000abc12def345&bizCode=photo_restore
 
 **POST** `/api/wechat/transcript/submit`
 
-发起一个视频文案/脚本提取任务。接受小程序端传递的 `code` 和 `url`（抖音分享链接）。服务端会先解析抖音链接获取到对应的视频文件，然后自动下载并在后端获取 openid 后调用第三方文案提取接口进行异步处理。
+解析传入的抖音分享链接，提取无水印视频的原链接直接返回给前端，供前端直接下载视频文件（同步处理，无需轮询）。
 
 #### 请求头
 
@@ -949,18 +949,21 @@ Content-Type: application/json
 ```json
 {
   "success": true,
-  "message": "任务已提交，正在后台处理中，请稍后查询结果",
   "data": {
-    "taskId": "123456",
-    "status": "PENDING"
+    "taskId": "transcript_1717171717171_a1b2c3",
+    "url": "https://www.douyin.com/aweme/v1/play/?video_id=...",
+    "cover": "https://p3-sign.douyinpic.com/...",
+    "desc": "抖音视频描述文字"
   }
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `taskId` | string | 提取任务的 ID，用于后续查询结果 |
-| `status` | string | 任务初始状态，固定为 `PENDING` |
+| `taskId` | string | 任务记录 ID |
+| `url` | string | 无水印视频原始下载地址 |
+| `cover` | string | 视频封面图 URL |
+| `desc` | string | 视频描述/标题 |
 
 #### 响应 - 有正在处理的任务 (409)
 
