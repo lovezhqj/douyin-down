@@ -51,7 +51,7 @@
 | 发起视频去水印 | `POST` | `/api/parse` | 解析抖音视频链接，获取无水印视频地址（同步处理） |
 | 查询当日免费剩余次数 | `GET` | `/api/quota/remaining` | 查询当日业务功能免费剩余调用次数 |
 
-**Base URL**: `https://douyin-down.fly.dev`
+**Base URL**: `https://tools.kkdmx.com`
 
 > [!IMPORTANT]
 > 请将 Base URL 替换为你们实际的 Fly.io 应用域名。如果有自定义域名，使用自定义域名。
@@ -1477,7 +1477,7 @@ GET /api/quota/remaining?code=0a3Xyz000abc12def345&bizCode=photo_restore
 ```javascript
 // utils/api.js
 
-const BASE_URL = 'https://douyin-down.fly.dev';
+const BASE_URL = 'https://tools.kkdmx.com';
 
 /**
  * 微信登录，获取 openid

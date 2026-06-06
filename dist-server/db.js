@@ -88,6 +88,7 @@ const DEFAULT_QUOTA_CONFIGS = [
     { bizCode: 'image_to_video', bizName: '图生视频', dailyFreeLimit: 5, dailyMaxLimit: 20 },
     { bizCode: 'video_transcript', bizName: '视频文案提取', dailyFreeLimit: 5, dailyMaxLimit: 20 },
     { bizCode: 'video_parse', bizName: '视频去水印', dailyFreeLimit: 5, dailyMaxLimit: 20 },
+    { bizCode: 'novel_to_script', bizName: '小说改漫剧剧本', dailyFreeLimit: 5, dailyMaxLimit: 20 },
 ];
 /**
  * Seed default quota configurations (idempotent — uses ON CONFLICT DO NOTHING).

@@ -19,7 +19,7 @@ function getWebhookBaseUrl() {
     if (process.env.FLY_APP_NAME) {
         return `https://${process.env.FLY_APP_NAME}.fly.dev`;
     }
-    return 'https://douyin-down.fly.dev';
+    return 'https://tools.kkdmx.com';
 }
 // ============================================================
 // API Functions
@@ -802,5 +802,74 @@ export async function submitImageToVideo(imageUrl, options = {}) {
     // Step 3: Create task using V1 API (服务端调用 apiType=5)
     const taskResult = await createTask(config.workflowId, nodeInfoList);
     console.log('[RunningHub] Image to Video task created:', taskResult.taskId);
+    return taskResult.taskId;
+}
+// ============================================================
+// Novel to Comic Drama Script (小说改漫剧剧本) Workflow
+// ============================================================
+/**
+ * Novel-to-Comic-Drama-Script workflow configuration.
+ * The workflowId and nodeInfoList are configured via environment variables.
+ *
+ * Workflow node mapping (from 小说改成漫剧剧本_api.json):
+ * Node 22 (ShellAgentPluginInputText)  — fieldName: "input_text"  — 上传小说章节文本
+ * Node 4  (RH_LLMAPI_NODE)            — LLM processing (temperature, seed)
+ * Node 8  (easy saveText)             — 保存输出文本
+ * Node 9  (PreviewAny)               — 预览输出文本
+ *
+ * Note: This is a workflow API call (apiType=5), uses V1 createTask API.
+ */
+export function getNovelToScriptConfig() {
+    // The workflow ID for Novel to Comic Drama Script — 小说改漫剧剧本
+    const workflowId = process.env.RUNNINGHUB_WEBAPP_ID_NOVEL_TO_SCRIPT || '2010703685424259074';
+    return {
+        workflowId,
+        // Novel text input node
+        textNodeId: '22',
+        textFieldName: 'default_value',
+        // LLM config node (optional overrides)
+        llmNodeId: '4',
+        temperatureFieldName: 'temperature',
+        temperatureDefault: 0.6,
+        seedFieldName: 'seed',
+    };
+}
+/**
+ * Execute the full novel-to-comic-drama-script flow:
+ * 1. Create task with novel text and options
+ *
+ * Returns the taskId for tracking.
+ */
+export async function submitNovelToScript(options) {
+    const config = getNovelToScriptConfig();
+    const nodeInfoList = [
+        // Required: novel text input
+        {
+            nodeId: config.textNodeId,
+            fieldName: config.textFieldName,
+            fieldValue: options.novelText,
+        },
+    ];
+    // Optional: temperature
+    if (options.temperature !== undefined) {
+        nodeInfoList.push({
+            nodeId: config.llmNodeId,
+            fieldName: config.temperatureFieldName,
+            fieldValue: String(options.temperature),
+        });
+    }
+    // Optional: seed
+    const seed = options.seed !== undefined && options.seed >= 0
+        ? options.seed
+        : Math.floor(Math.random() * 1000000000);
+    nodeInfoList.push({
+        nodeId: config.llmNodeId,
+        fieldName: config.seedFieldName,
+        fieldValue: String(seed),
+    });
+    console.log('[RunningHub] Novel to Script nodeInfoList:', JSON.stringify(nodeInfoList));
+    // Create task using V1 API (workflow API call, apiType=5)
+    const taskResult = await createTask(config.workflowId, nodeInfoList);
+    console.log('[RunningHub] Novel to Script task created:', taskResult.taskId);
     return taskResult.taskId;
 }

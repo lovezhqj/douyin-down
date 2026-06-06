@@ -23,7 +23,7 @@ function getWebhookBaseUrl(): string {
     if (process.env.FLY_APP_NAME) {
         return `https://${process.env.FLY_APP_NAME}.fly.dev`;
     }
-    return 'https://douyin-down.fly.dev';
+    return 'https://tools.kkdmx.com';
 }
 
 // ============================================================
