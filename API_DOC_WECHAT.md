@@ -23,6 +23,7 @@
    - [查询视频文案提取结果](#10-查询视频文案提取结果)
    - [发起视频去水印](#12-发起视频去水印)
    - [查询当日免费剩余次数](#13-查询当日免费剩余次数)
+   - [图床上传](#14-图床上传)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -50,6 +51,10 @@
 | 查询视频文案结果 | `GET` | `/api/wechat/transcript/result` | 根据任务 ID 查询视频文案提取的状态和结果 |
 | 发起视频去水印 | `POST` | `/api/parse` | 解析抖音视频链接，获取无水印视频地址（同步处理） |
 | 查询当日免费剩余次数 | `GET` | `/api/quota/remaining` | 查询当日业务功能免费剩余调用次数 |
+| 文本内容安全识别 | `POST` | `/api/wechat/msg_sec_check` | 检测用户产生文本是否违规（同步处理） |
+| 异步多媒体安全识别 | `POST` | `/api/wechat/media_check_async` | 异步检测图片/音频是否违规（支持直接文件上传，结果通过回调推送） |
+| 获取用户安全等级 | `POST` | `/api/wechat/user_risk_rank` | 检测用户账号安全等级与风控等级（同步处理） |
+| 图床上传 | `POST` | `/api/wechat/image_hosting/upload` | 微信验证后上传图片到图床，返回永久可访问链接（同步处理） |
 
 **Base URL**: `https://tools.kkdmx.com`
 
@@ -1367,6 +1372,399 @@ GET /api/quota/remaining?code=0a3Xyz000abc12def345&bizCode=photo_restore
   "error": "code 参数必填"
 }
 ```
+
+---
+
+### 14. 文本内容安全识别
+
+**POST** `/api/wechat/msg_sec_check`
+
+文本内容安全识别接口（微信安全中心 2.0 版本）。用于检查用户输入的一段文本中是否含有色情、政治敏感、暴恐等违法违规内容。
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ❌ | 微信小程序临时登录凭证，用作验证并获取 openid（与 `openid` 二选一） |
+| `openid` | string | ❌ | 用户的 OpenID（与 `code` 二选一） |
+| `content` | string | ✅ | 需检测的文本内容（上限 2500 字，UTF-8 编码） |
+| `scene` | number | ❌ | 场景值。1-资料，2-评论，3-论坛，4-社交日志。默认 `2` |
+
+#### 请求示例
+
+```json
+{
+  "code": "0a3Xyz000abc12def345",
+  "content": "这是一段需要检测的安全文本内容。",
+  "scene": 2
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "data": {
+    "suggest": "pass",
+    "label": 100,
+    "detail": []
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `suggest` | string | 建议动作：`pass`（正常通过），`block`（拦截拦截），`review`（需人工审核） |
+| `label` | number | 分类标签：`100`（正常），`20001`（时政），`20002`（色情），`20003`（辱骂），`20006`（违禁），`20008`（欺诈），`20012`（暴恐）等 |
+| `detail` | array | 详细检测结果列表，包含每个命中的敏感点及分值信息 |
+
+> [!WARNING]
+> 当 `suggest` 返回为 `block` 时，服务端会将对应任务状态在 DB 中记录为 `FAILED`，并增加每日文本安全检查频次扣减。建议前端拦截该操作，禁止用户发表该内容。
+
+#### 响应 - 内容违规 (200, 拦截)
+
+```json
+{
+  "success": true,
+  "data": {
+    "suggest": "block",
+    "label": 20002,
+    "detail": [
+      {
+        "strategy": "content_model",
+        "errcode": 0,
+        "suggest": "block",
+        "label": 20002,
+        "prob": 99
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 15. 异步多媒体内容安全识别
+
+**POST** `/api/wechat/media_check_async`
+
+异步多媒体内容安全识别接口（微信安全中心 2.0 版本）。支持图片和音频检测。
+- 允许直接传入一个公网可访问的 `mediaUrl`。
+- **也支持直接以 multipart/form-data 格式上传文件**，服务端会通过 `uploadFileV2` 接口自动转存至 RunningHub 产生公网临时链接，再向微信发起检测。
+
+#### 请求头
+
+- **方式一（传递 URL 链接）**:
+  ```
+  Content-Type: application/json
+  ```
+- **方式二（直接上传文件）**:
+  ```
+  Content-Type: multipart/form-data
+  ```
+
+#### 请求参数
+
+##### 方式一 (JSON Body)
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ❌ | 微信小程序临时登录凭证，用作验证并获取 openid（与 `openid` 二选一） |
+| `openid` | string | ❌ | 用户的 OpenID（与 `code` 二选一） |
+| `mediaUrl` | string | ✅ | 待检测的多媒体公网 URL 链接（需以 http:// 或 https:// 开头） |
+| `mediaType` | number | ✅ | 媒体类型：1-音频，2-图片 |
+| `scene` | number | ❌ | 场景值。1-资料，2-评论，3-论坛，4-社交日志。默认 `2` |
+
+##### 方式二 (Multipart Form Data)
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `file` | File | ✅ | 待检测的图片/音频文件（图片上限 10MB，音频上限 30MB） |
+| `code` | string | ❌ | 微信小程序临时登录凭证（与 `openid` 二选一） |
+| `openid` | string | ❌ | 用户的 OpenID（与 `code` 二选一） |
+| `mediaType` | number | ✅ | 媒体类型：1-音频，2-图片 |
+| `scene` | number | ❌ | 场景值。1-资料，2-评论，3-论坛，4-社交日志。默认 `2` |
+
+#### 请求示例 (JSON 格式)
+
+```json
+{
+  "code": "0a3Xyz000abc12def345",
+  "mediaUrl": "https://rh-images-switch-xxx.cos.ap-guangzhou.myqcloud.com/input/openapi/xxx.png",
+  "mediaType": 2,
+  "scene": 2
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "多媒体安全检测任务已提交，结果将通过微信回调异步推送，可使用 task_id 查询状态",
+  "data": {
+    "taskId": "967e945cd8a3e458f3c74dcb886068e9",
+    "status": "PENDING"
+  }
+}
+```
+
+> [!NOTE]
+> **结果查询与消息推送说明**：
+> 1. 本接口为**异步检测**，成功调用仅表示微信已受理该检测，返回的 `taskId`（即微信返回的 `trace_id`）为唯一凭证。
+> 2. 最终检测结果微信服务器会在 30 分钟内通过 **Webhook 消息推送** 回调给本服务。
+> 3. 前端在收到本接口成功响应后，应在客户端以 **3 ~ 5秒** 间隔轮询 `GET /api/photo/result?code=...&bizCode=media_sec_check` 来获取检测状态（由 Webhook 触发数据库自动更新）。
+
+##### 查询结果示例：
+- 当处于排队或检测中：
+  `GET /api/photo/result?code=...&bizCode=media_sec_check` → `{"success": true, "data": {"status": "PENDING", ...}}`
+- 当检测通过：
+  `GET /api/photo/result?code=...&bizCode=media_sec_check` → `{"success": true, "data": {"status": "SUCCESS", "message": "检测完成，内容合规", ...}}`
+- 当检测到违规或处理失败：
+  `GET /api/photo/result?code=...&bizCode=media_sec_check` → `{"success": true, "data": {"status": "FAILED", "message": "内容含有违规信息，已被拦截", ...}}`
+
+#### 微信消息推送服务器配置 (微信管理后台)
+- **推送 URL**: `https://your-domain.com/api/wechat/webhook`
+- **支持格式**: XML 或 JSON
+- **Token 校验**: 在服务端设置 `WECHAT_TOKEN` 后，支持在后台点击“提交”时进行 URL 自动鉴权。
+
+---
+
+### 16. 获取用户安全等级
+
+**POST** `/api/wechat/user_risk_rank`
+
+根据用户的基础信息评估该用户的风险等级（防刷、防黑产、防恶意灌水）。**无需用户授权。**
+
+#### 请求头
+
+```
+Content-Type: application/json
+```
+
+#### 请求参数 (JSON Body)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ❌ | 微信小程序临时登录凭证（与 `openid` 二选一） |
+| `openid` | string | ❌ | 用户的 OpenID（与 `code` 二选一） |
+| `scene` | number | ❌ | 场景值：1-注册，2-登录，3-支付，4-活动。默认 `1` |
+| `clientIp` | string | ❌ | 用户客户端 IP 地址（若不传，服务端将自动获取 HTTP 请求的远程 IP） |
+| `mobileNo` | string | ❌ | 用户手机号（选填） |
+| `emailAddress` | string | ❌ | 用户邮箱（选填） |
+| `extendedInfo` | string | ❌ | 额外补充信息（选填） |
+
+#### 请求示例
+
+```json
+{
+  "code": "0a3Xyz000abc12def345",
+  "scene": 1,
+  "clientIp": "183.12.34.56"
+}
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "data": {
+    "riskRank": 0,
+    "unionsig": "abcde12345..."
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `riskRank` | number | 用户风险等级：`0`（无风险），`1`（低风险），`2`（中风险），`3`（高风险），`4`（极高风险） |
+| `unionsig` | string | 风险特征签名，可用于业务系统的二次比对和安全防护校验 |
+
+---
+
+### 14. 图床上传
+
+**POST** `/api/wechat/image_hosting/upload`
+
+微信小程序图床上传接口。前端通过 `wx.login` 获取 code 后，连同图片文件一起上传，服务端先用 code 验证用户身份（换取 openid），验证成功后将图片上传至 [HelloImg 图床](https://www.helloimg.com)，返回图片永久可访问链接。
+
+> [!NOTE]
+> 此接口使用独立的微信 AppID/AppSecret（硬编码在服务端），与其他接口使用的环境变量无关。图片上传到 HelloImg 图床后会获得**永久有效**的图片链接，不受有效期限制。
+
+#### 请求头
+
+```
+Content-Type: multipart/form-data
+```
+
+#### 请求参数 (Form Data)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ✅ | 微信小程序 `wx.login` 返回的临时登录凭证，用于验证用户身份 |
+| `file` | File | ✅ | 要上传的图片文件（支持 JPG/PNG/WEBP/GIF/AVIF） |
+
+#### 文件限制
+
+- 最大文件大小：**10MB**
+- 支持的图片格式：JPG、PNG、JPEG、WEBP、GIF、AVIF
+
+#### 微信小程序调用示例
+
+```javascript
+// 1. 先调用 wx.login 获取 code
+wx.login({
+  success(loginRes) {
+    if (!loginRes.code) {
+      wx.showToast({ title: '登录失败', icon: 'none' });
+      return;
+    }
+
+    // 2. 选择图片
+    wx.chooseImage({
+      count: 1,
+      sizeType: ['compressed'],
+      sourceType: ['album', 'camera'],
+      success(chooseRes) {
+        const tempFilePath = chooseRes.tempFilePaths[0];
+
+        // 3. 上传图片到图床
+        wx.uploadFile({
+          url: 'https://tools.kkdmx.com/api/wechat/image_hosting/upload',
+          filePath: tempFilePath,
+          name: 'file',
+          formData: {
+            code: loginRes.code
+          },
+          success(uploadRes) {
+            const data = JSON.parse(uploadRes.data);
+            if (data.success) {
+              console.log('图片链接:', data.data.url);
+              console.log('缩略图链接:', data.data.thumbnailUrl);
+            } else {
+              console.error('上传失败:', data.error);
+            }
+          },
+          fail(err) {
+            console.error('请求失败:', err);
+          }
+        });
+      }
+    });
+  }
+});
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "图片上传成功",
+  "data": {
+    "url": "https://www.helloimg.com/i/2024/01/01/abcdef123456.png",
+    "thumbnailUrl": "https://www.helloimg.com/i/2024/01/01/abcdef123456.th.png",
+    "deleteUrl": "https://www.helloimg.com/delete/xxxxxxxxx",
+    "key": "abcdef123456",
+    "name": "abcdef123456.png",
+    "pathname": "2024/01/01/abcdef123456.png",
+    "originName": "photo.png",
+    "size": 123.45,
+    "mimetype": "image/png",
+    "extension": "png",
+    "md5": "d41d8cd98f00b204e9800998ecf8427e",
+    "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    "links": {
+      "url": "https://www.helloimg.com/i/2024/01/01/abcdef123456.png",
+      "html": "<img src=\"...\" />",
+      "bbcode": "[img]...[/img]",
+      "markdown": "![abcdef123456.png](...)",
+      "markdown_with_link": "[![abcdef123456.png](...)](...)",
+      "thumbnail_url": "https://www.helloimg.com/i/2024/01/01/abcdef123456.th.png",
+      "delete_url": "https://www.helloimg.com/delete/xxxxxxxxx"
+    }
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `url` | string | 图片永久访问链接（**首选使用此字段**） |
+| `thumbnailUrl` | string | 缩略图链接 |
+| `deleteUrl` | string | 图片删除链接（保存后可用于管理图片） |
+| `key` | string | 图片唯一密钥 |
+| `name` | string | 图片名称 |
+| `pathname` | string | 图片路径名 |
+| `originName` | string | 原始文件名 |
+| `size` | number | 图片大小（KB） |
+| `mimetype` | string | 图片 MIME 类型 |
+| `extension` | string | 图片扩展名 |
+| `md5` | string | 图片 MD5 值 |
+| `sha1` | string | 图片 SHA1 值 |
+| `links` | object | 包含各种格式链接（url、html、bbcode、markdown 等） |
+
+> [!TIP]
+> 返回的 `url` 是图片的永久访问链接，可直接用于小程序的 `<image>` 组件展示，也可以用作其他接口（如老照片修复）的 `imageUrl` 参数。
+
+#### 响应 - 参数错误 (400)
+
+```json
+{
+  "success": false,
+  "error": "code 参数必填"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "请上传图片文件（字段名: file）"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "不支持的图片类型: application/pdf，仅支持 JPG/PNG/WEBP/GIF/AVIF"
+}
+```
+
+#### 响应 - 微信验证失败 (400)
+
+```json
+{
+  "success": false,
+  "error": "微信验证失败：code 无效或已过期，请重新调用 wx.login",
+  "errcode": 40029
+}
+```
+
+#### 响应 - 服务器错误 (500)
+
+```json
+{
+  "success": false,
+  "error": "图片上传失败：具体错误信息"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "图床上传失败：具体错误信息"
+}
+```
+
+> [!IMPORTANT]
+> **与其他文件上传接口的区别**：
+> - `/api/upload` — 上传文件到 RunningHub，返回的 URL 有效期约 **1天**，用于 AI 处理任务
+> - `/api/wechat/image_hosting/upload` — 上传图片到 HelloImg 图床，返回 **永久有效** 的图片链接，需要微信 code 验证
 
 ---
 
