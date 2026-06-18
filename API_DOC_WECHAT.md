@@ -1595,7 +1595,7 @@ Content-Type: application/json
 微信小程序图床上传接口。前端通过 `wx.login` 获取 code 后，连同图片文件一起上传，服务端先用 code 验证用户身份（换取 openid），验证成功后将图片上传至 [HelloImg 图床](https://www.helloimg.com)，返回图片永久可访问链接。
 
 > [!NOTE]
-> 此接口使用独立的微信 AppID/AppSecret（硬编码在服务端），与其他接口使用的环境变量无关。图片上传到 HelloImg 图床后会获得**永久有效**的图片链接，不受有效期限制。
+> 此接口使用独立的微信 AppID/AppSecret（通过环境变量 `IMAGE_HOSTING_WECHAT_APPID` / `IMAGE_HOSTING_WECHAT_SECRET` 配置），与其他接口使用的 `WECHAT_APPID` / `WECHAT_SECRET` 环境变量无关。图片上传到 HelloImg 图床（token 通过 `HELLOIMG_API_TOKEN` 环境变量配置）后会获得**永久有效**的图片链接，不受有效期限制。
 
 #### 请求头
 
@@ -2543,3 +2543,6 @@ A: 需要配置以下环境变量：
 - `RUNNINGHUB_API_KEY` — RunningHub API 密钥
 - `DATABASE_URL` — PostgreSQL 数据库连接字符串
 - `RUNNINGHUB_WEBAPP_ID_ANIME_CONVERT` — （可选）真人转动漫工作流 ID，默认为 `2059878371705843713`
+- `IMAGE_HOSTING_WECHAT_APPID` — 图床上传接口专用的微信小程序 AppID（与 `WECHAT_APPID` 独立）
+- `IMAGE_HOSTING_WECHAT_SECRET` — 图床上传接口专用的微信小程序 AppSecret（与 `WECHAT_SECRET` 独立）
+- `HELLOIMG_API_TOKEN` — HelloImg 图床 API Token

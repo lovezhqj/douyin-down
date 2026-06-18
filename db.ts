@@ -99,6 +99,8 @@ const DEFAULT_QUOTA_CONFIGS = [
     { bizCode: 'video_transcript', bizName: '视频文案提取', dailyFreeLimit: 5, dailyMaxLimit: 20 },
     { bizCode: 'video_parse', bizName: '视频去水印', dailyFreeLimit: 5, dailyMaxLimit: 20 },
     { bizCode: 'novel_to_script', bizName: '小说改漫剧剧本', dailyFreeLimit: 5, dailyMaxLimit: 20 },
+    { bizCode: 'msg_sec_check', bizName: '文本安全内容识别', dailyFreeLimit: 100, dailyMaxLimit: 500 },
+    { bizCode: 'media_sec_check', bizName: '音视频图片安全内容识别', dailyFreeLimit: 50, dailyMaxLimit: 200 },
 ];
 
 /**

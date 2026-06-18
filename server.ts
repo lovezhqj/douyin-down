@@ -2542,16 +2542,24 @@ app.get('/api/wechat/transcript/result', async (req, res) => {
 // API: POST /api/wechat/image_hosting/upload — 图床上传（微信验证）
 // ============================================================
 
-/** Hardcoded WeChat credentials for image hosting verification */
-const IMAGE_HOSTING_WECHAT_APPID = 'wx3406fa15d1bb4861';
-const IMAGE_HOSTING_WECHAT_SECRET = 'b9cb99fc10b10d83e94151b5ad14f5e1';
+/** WeChat credentials for image hosting verification (read from environment variables) */
+const IMAGE_HOSTING_WECHAT_APPID = process.env.IMAGE_HOSTING_WECHAT_APPID || '';
+const IMAGE_HOSTING_WECHAT_SECRET = process.env.IMAGE_HOSTING_WECHAT_SECRET || '';
 
-/** Hardcoded HelloImg API token */
-const HELLOIMG_API_TOKEN = '1692|4eamVMuvLawp5tAUdHWZhAtkHzFBVvuaFNfpfcV6';
+/** HelloImg API token (read from environment variable) */
+const HELLOIMG_API_TOKEN = process.env.HELLOIMG_API_TOKEN || '';
 const HELLOIMG_API_BASE = 'https://www.helloimg.com/api/v1';
 
+// Startup validation for image hosting credentials
+if (!IMAGE_HOSTING_WECHAT_APPID || !IMAGE_HOSTING_WECHAT_SECRET || !HELLOIMG_API_TOKEN) {
+    console.warn('[ImageHosting] ⚠️ 缺少图床上传所需的环境变量，请检查以下配置：');
+    if (!IMAGE_HOSTING_WECHAT_APPID) console.warn('  - IMAGE_HOSTING_WECHAT_APPID 未设置');
+    if (!IMAGE_HOSTING_WECHAT_SECRET) console.warn('  - IMAGE_HOSTING_WECHAT_SECRET 未设置');
+    if (!HELLOIMG_API_TOKEN) console.warn('  - HELLOIMG_API_TOKEN 未设置');
+}
+
 /**
- * Exchange WeChat code for openid using hardcoded AppID/AppSecret (image hosting specific).
+ * Exchange WeChat code for openid using image-hosting-specific AppID/AppSecret (from env vars).
  */
 async function getOpenIdForImageHosting(code: string): Promise<{ openid: string }> {
     console.log('[ImageHosting] Exchanging code for openid...');

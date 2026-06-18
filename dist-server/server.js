@@ -171,6 +171,24 @@ function findVideoInObject(obj) {
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 app.use(express.json());
+// Middleware to capture raw body for XML requests (WeChat Webhook configuration and push events)
+app.use((req, res, next) => {
+    const contentType = req.headers['content-type'] || '';
+    if (contentType.includes('xml')) {
+        let data = '';
+        req.setEncoding('utf8');
+        req.on('data', (chunk) => {
+            data += chunk;
+        });
+        req.on('end', () => {
+            req.rawBody = data;
+            next();
+        });
+    }
+    else {
+        next();
+    }
+});
 // Multer configuration: store files in memory (for forwarding to RunningHub)
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -238,6 +256,45 @@ async function getOpenIdFromCode(code) {
         openid: wxData.openid,
         unionid: wxData.unionid,
     };
+}
+let cachedWechatToken = null;
+let cachedWechatTokenExpiresAt = 0;
+/**
+ * Helper to get cached or fresh WeChat API Access Token.
+ */
+async function getWechatAccessToken() {
+    const now = Date.now();
+    // Return cached token if valid (with 5-minute safety buffer)
+    if (cachedWechatToken && cachedWechatTokenExpiresAt > now + 300000) {
+        return cachedWechatToken;
+    }
+    const appId = process.env.WECHAT_APPID;
+    const appSecret = process.env.WECHAT_SECRET;
+    if (!appId || !appSecret) {
+        console.error('[Wechat] WECHAT_APPID or WECHAT_SECRET not configured');
+        throw new Error('服务端微信配置缺失，请联系管理员');
+    }
+    console.log('[Wechat] Fetching new access token from WeChat...');
+    const tokenRes = await axios.get('https://api.weixin.qq.com/cgi-bin/token', {
+        params: {
+            grant_type: 'client_credential',
+            appid: appId,
+            secret: appSecret,
+        },
+        timeout: 10000,
+    });
+    const tokenData = tokenRes.data;
+    if (tokenData.errcode && tokenData.errcode !== 0) {
+        console.error('[Wechat] Failed to fetch access token:', tokenData.errmsg);
+        throw new Error(`获取微信 AccessToken 失败: ${tokenData.errmsg}`);
+    }
+    if (!tokenData.access_token) {
+        throw new Error('获取微信 AccessToken 异常：未返回 access_token');
+    }
+    cachedWechatToken = tokenData.access_token;
+    cachedWechatTokenExpiresAt = now + (tokenData.expires_in * 1000);
+    console.log(`[Wechat] Access token updated. Expires in ${tokenData.expires_in} seconds.`);
+    return tokenData.access_token;
 }
 // ============================================================
 // Admin Authentication Middleware
@@ -443,6 +500,361 @@ app.post('/api/wechat/login', async (req, res) => {
             success: false,
             error: '微信登录失败：' + (error.message || '未知错误'),
             errcode: error.errcode,
+        });
+    }
+});
+// ============================================================
+// API: GET /api/wechat/webhook — 微信小程序消息推送服务器配置校验
+// ============================================================
+app.get('/api/wechat/webhook', (req, res) => {
+    const { signature, timestamp, nonce, echostr } = req.query;
+    const token = process.env.WECHAT_TOKEN;
+    console.log('[WechatWebhook] Verification request received:', JSON.stringify(req.query));
+    if (!token) {
+        console.warn('[WechatWebhook] WECHAT_TOKEN environment variable not set, skipping signature validation.');
+        return res.send(echostr);
+    }
+    if (!signature || !timestamp || !nonce) {
+        return res.status(400).send('Invalid parameters');
+    }
+    const tempArr = [token, timestamp, nonce].sort();
+    const tempStr = tempArr.join('');
+    const hash = crypto.createHash('sha1').update(tempStr).digest('hex');
+    if (hash === signature) {
+        res.send(echostr);
+    }
+    else {
+        console.warn('[WechatWebhook] Signature validation failed');
+        res.status(403).send('Signature verification failed');
+    }
+});
+// ============================================================
+// API: POST /api/wechat/webhook — 接收微信消息推送回调（XML 或 JSON）
+// ============================================================
+app.post('/api/wechat/webhook', async (req, res) => {
+    try {
+        let event = '';
+        let traceId = '';
+        let isRisky = 0;
+        let statusCode = 0;
+        let extraInfoStr = '';
+        // WeChat webhook can be sent in either JSON or XML format depending on WeChat settings.
+        const contentType = req.headers['content-type'] || '';
+        const rawXml = req.rawBody;
+        if (contentType.includes('xml') && rawXml) {
+            console.log('[WechatWebhook] Parsing XML callback...');
+            const $ = cheerio.load(rawXml, { xmlMode: true });
+            event = $('Event').text() || $('event').text() || '';
+            traceId = $('trace_id').text() || $('traceId').text() || '';
+            const riskyText = $('isrisky').text() || $('isRisky').text() || '0';
+            isRisky = parseInt(riskyText, 10);
+            const statusText = $('status_code').text() || $('statusCode').text() || '0';
+            statusCode = parseInt(statusText, 10);
+            extraInfoStr = $('extra_info_json').text() || $('extraInfoJson').text() || '';
+        }
+        else {
+            console.log('[WechatWebhook] Parsing JSON callback...');
+            const body = req.body || {};
+            event = body.Event || body.event || '';
+            traceId = body.trace_id || body.traceId || '';
+            isRisky = typeof body.isrisky === 'number' ? body.isrisky : parseInt(body.isrisky || '0', 10);
+            statusCode = typeof body.status_code === 'number' ? body.status_code : parseInt(body.status_code || '0', 10);
+            extraInfoStr = typeof body.extra_info_json === 'string' ? body.extra_info_json : JSON.stringify(body.extra_info_json || {});
+        }
+        console.log(`[WechatWebhook] Event: ${event}, traceId: ${traceId}, isRisky: ${isRisky}, statusCode: ${statusCode}`);
+        if (event === 'wxa_media_check') {
+            if (!traceId) {
+                console.warn('[WechatWebhook] wxa_media_check event received without trace_id');
+                return res.send('success');
+            }
+            // Look up task in DB
+            const task = await getTaskByTaskId(traceId);
+            if (!task) {
+                console.warn(`[WechatWebhook] Task not found for trace_id: ${traceId}`);
+                return res.send('success');
+            }
+            let status = 'SUCCESS';
+            let errorMessage = null;
+            let outputData = {
+                isRisky,
+                statusCode,
+            };
+            try {
+                if (extraInfoStr) {
+                    outputData.extraInfo = JSON.parse(extraInfoStr);
+                }
+            }
+            catch (e) {
+                outputData.extraInfoRaw = extraInfoStr;
+            }
+            // status_code -1008 means failed to download resource
+            if (statusCode !== 0) {
+                status = 'FAILED';
+                if (statusCode === 4294966288 || statusCode === -1008) {
+                    errorMessage = '微信下载多媒体文件失败（-1008），请确保链接公开可访问并且没有被防盗链拦截';
+                }
+                else {
+                    errorMessage = `内容安全检测处理出错，错误码：${statusCode}`;
+                }
+            }
+            else if (isRisky === 1) {
+                status = 'FAILED';
+                errorMessage = '内容含有违规信息，已被拦截';
+            }
+            await updateTaskByTaskId(traceId, status, outputData, task.input_image_url, errorMessage);
+            console.log(`[WechatWebhook] Successfully updated task ${traceId} to ${status}`);
+        }
+        else {
+            console.log(`[WechatWebhook] Ignored event: ${event}`);
+        }
+        // WeChat requires replying with success or empty string to acknowledge receipt
+        res.send('success');
+    }
+    catch (error) {
+        console.error('[WechatWebhook] Error processing webhook:', error.message);
+        // Reply success even on error to prevent WeChat from continuously retrying
+        res.send('success');
+    }
+});
+// ============================================================
+// API: POST /api/wechat/msg_sec_check — 文本内容安全识别
+// ============================================================
+app.post('/api/wechat/msg_sec_check', async (req, res) => {
+    try {
+        const { code, openid: inputOpenid, content, scene } = req.body;
+        if (!content || typeof content !== 'string') {
+            return res.status(400).json({ success: false, error: 'content 参数必填且必须为字符串' });
+        }
+        // Validate content length (WeChat limits to 2500 characters)
+        if (content.length > 2500) {
+            return res.status(400).json({ success: false, error: 'content 长度不能超过 2500 字' });
+        }
+        let openid = inputOpenid;
+        if (!openid) {
+            if (!code || typeof code !== 'string') {
+                return res.status(400).json({ success: false, error: 'code 或 openid 参数必选其一' });
+            }
+            try {
+                const wxData = await getOpenIdFromCode(code);
+                openid = wxData.openid;
+            }
+            catch (err) {
+                return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+            }
+        }
+        console.log(`[MsgSecCheck] openid=${openid}, content length=${content.length}`);
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'msg_sec_check');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
+        // Create a pending record in tasks for quota increment
+        const taskId = `msgsec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+        await createDbTask(openid, 'msg_sec_check', taskId, content.substring(0, 100));
+        // Get WeChat access token
+        const accessToken = await getWechatAccessToken();
+        // Call WeChat msgSecCheck API
+        const wxRes = await axios.post(`https://api.weixin.qq.com/wxa/msg_sec_check?access_token=${accessToken}`, {
+            version: 2,
+            openid: openid,
+            scene: typeof scene === 'number' ? scene : 2, // Default to comment/forum scene
+            content: content,
+        }, {
+            timeout: 10000,
+        });
+        const wxData = wxRes.data;
+        console.log('[MsgSecCheck] WeChat response:', JSON.stringify(wxData));
+        if (wxData.errcode && wxData.errcode !== 0) {
+            await updateTaskByTaskId(taskId, 'FAILED', wxData, null, wxData.errmsg || '微信文本检测接口调用失败');
+            return res.status(500).json({
+                success: false,
+                error: `微信接口调用失败: ${wxData.errmsg}`,
+                errcode: wxData.errcode,
+            });
+        }
+        const result = wxData.result || {};
+        const suggest = result.suggest || 'pass'; // 'pass', 'block', 'review'
+        const label = result.label || 100;
+        let status = 'SUCCESS';
+        let errorMessage = null;
+        if (suggest === 'block') {
+            status = 'FAILED';
+            errorMessage = '内容含有违规信息，已被拦截';
+        }
+        await updateTaskByTaskId(taskId, status, wxData, null, errorMessage);
+        res.json({
+            success: true,
+            data: {
+                suggest, // pass, block, review
+                label,
+                detail: result.detail || [],
+            },
+        });
+    }
+    catch (error) {
+        console.error('[MsgSecCheck] Unhandled error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '文本安全检测失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+// ============================================================
+// API: POST /api/wechat/media_check_async — 异步多媒体内容安全识别
+// ============================================================
+app.post('/api/wechat/media_check_async', upload.single('file'), async (req, res) => {
+    try {
+        const { code, openid: inputOpenid, mediaUrl: inputMediaUrl, mediaType, scene } = req.body;
+        const file = req.file;
+        let mediaUrl = inputMediaUrl;
+        // If file is uploaded directly, upload to RunningHub V2 first to get public downloadUrl
+        if (file) {
+            console.log(`[MediaCheckAsync] Uploaded file received: ${file.originalname}, size: ${file.size}, type: ${file.mimetype}`);
+            try {
+                const uploadResult = await uploadFileV2(file.buffer, file.originalname, file.mimetype);
+                mediaUrl = uploadResult.downloadUrl;
+                console.log(`[MediaCheckAsync] File forwarded to RunningHub. URL: ${mediaUrl}`);
+            }
+            catch (err) {
+                console.error('[MediaCheckAsync] Forwarding file to RunningHub failed:', err.message);
+                return res.status(500).json({ success: false, error: `文件转存公共链接失败: ${err.message}` });
+            }
+        }
+        if (!mediaUrl || typeof mediaUrl !== 'string') {
+            return res.status(400).json({ success: false, error: 'mediaUrl 参数必填，或通过 multipart/form-data 上传 file 字段' });
+        }
+        if (!mediaUrl.startsWith('http://') && !mediaUrl.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'mediaUrl 格式无效，需以 http:// 或 https:// 开头' });
+        }
+        const typeNum = typeof mediaType === 'number' ? mediaType : parseInt(mediaType || '2', 10);
+        if (typeNum !== 1 && typeNum !== 2) {
+            return res.status(400).json({ success: false, error: 'mediaType 参数无效，1-音频，2-图片' });
+        }
+        let openid = inputOpenid;
+        if (!openid) {
+            if (!code || typeof code !== 'string') {
+                return res.status(400).json({ success: false, error: 'code 或 openid 参数必选其一' });
+            }
+            try {
+                const wxData = await getOpenIdFromCode(code);
+                openid = wxData.openid;
+            }
+            catch (err) {
+                return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+            }
+        }
+        console.log(`[MediaCheckAsync] openid=${openid}, mediaUrl=${mediaUrl.substring(0, 100)}, mediaType=${typeNum}`);
+        // Check daily quota
+        const quotaError = await checkDailyQuota(openid, 'media_sec_check');
+        if (quotaError) {
+            return res.status(429).json({ success: false, error: quotaError });
+        }
+        // Get WeChat access token
+        const accessToken = await getWechatAccessToken();
+        // Call WeChat mediaCheckAsync API
+        const wxRes = await axios.post(`https://api.weixin.qq.com/wxa/media_check_async?access_token=${accessToken}`, {
+            version: 2,
+            openid: openid,
+            scene: typeof scene === 'number' ? scene : 2, // Default to comment/forum scene
+            media_type: typeNum,
+            media_url: mediaUrl,
+        }, {
+            timeout: 10000,
+        });
+        const wxData = wxRes.data;
+        console.log('[MediaCheckAsync] WeChat response:', JSON.stringify(wxData));
+        if (wxData.errcode && wxData.errcode !== 0) {
+            return res.status(500).json({
+                success: false,
+                error: `微信接口调用失败: ${wxData.errmsg}`,
+                errcode: wxData.errcode,
+            });
+        }
+        const traceId = wxData.trace_id;
+        if (!traceId) {
+            return res.status(500).json({
+                success: false,
+                error: '微信接口调用异常，未返回 trace_id',
+            });
+        }
+        // Create a task record in tasks table
+        const task = await createDbTask(openid, 'media_sec_check', traceId, mediaUrl);
+        console.log(`[MediaCheckAsync] Task created in DB: id=${task.id}, traceId=${traceId}`);
+        res.json({
+            success: true,
+            message: '多媒体安全检测任务已提交，结果将通过微信回调异步推送，可使用 task_id 查询状态',
+            data: {
+                taskId: traceId,
+                status: 'PENDING',
+            },
+        });
+    }
+    catch (error) {
+        console.error('[MediaCheckAsync] Unhandled error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '多媒体安全检测提交失败：' + (error.message || '未知错误'),
+        });
+    }
+});
+// ============================================================
+// API: POST /api/wechat/user_risk_rank — 获取用户安全等级 (防刷防防黑产)
+// ============================================================
+app.post('/api/wechat/user_risk_rank', async (req, res) => {
+    try {
+        const { code, openid: inputOpenid, scene, clientIp, mobileNo, emailAddress, extendedInfo } = req.body;
+        let openid = inputOpenid;
+        if (!openid) {
+            if (!code || typeof code !== 'string') {
+                return res.status(400).json({ success: false, error: 'code 或 openid 参数必选其一' });
+            }
+            try {
+                const wxData = await getOpenIdFromCode(code);
+                openid = wxData.openid;
+            }
+            catch (err) {
+                return res.status(400).json({ success: false, error: `微信验证失败：${err.message}`, errcode: err.errcode });
+            }
+        }
+        // clientIp is required for risk assessment
+        const ip = clientIp || req.ip || req.socket.remoteAddress || '127.0.0.1';
+        console.log(`[UserRiskRank] openid=${openid}, ip=${ip}, scene=${scene}`);
+        // Get WeChat access token
+        const accessToken = await getWechatAccessToken();
+        // Call WeChat getUserRiskRank API
+        const wxRes = await axios.post(`https://api.weixin.qq.com/wxa/getuserriskrank?access_token=${accessToken}`, {
+            appid: process.env.WECHAT_APPID,
+            openid: openid,
+            scene: typeof scene === 'number' ? scene : 1, // Default scene (e.g. registration/login)
+            client_ip: ip,
+            mobile_no: mobileNo,
+            email_address: emailAddress,
+            extended_info: extendedInfo,
+        }, {
+            timeout: 10000,
+        });
+        const wxData = wxRes.data;
+        console.log('[UserRiskRank] WeChat response:', JSON.stringify(wxData));
+        if (wxData.errcode && wxData.errcode !== 0) {
+            return res.status(500).json({
+                success: false,
+                error: `微信接口调用失败: ${wxData.errmsg}`,
+                errcode: wxData.errcode,
+            });
+        }
+        res.json({
+            success: true,
+            data: {
+                riskRank: wxData.risk_rank, // 用户风险等级：0-无风险，1-低风险，2-中风险，3-高风险，4-极高风险
+                unionsig: wxData.unionsig, // 唯一签名标识
+            },
+        });
+    }
+    catch (error) {
+        console.error('[UserRiskRank] Unhandled error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: '获取用户安全等级失败：' + (error.message || '未知错误'),
         });
     }
 });
@@ -1633,6 +2045,9 @@ app.get('/api/photo/result', async (req, res) => {
                 break;
             case 'SUCCESS':
                 responseData.message = '任务处理完成';
+                if (bizCode === 'media_sec_check') {
+                    responseData.message = '检测完成，内容合规';
+                }
                 if (bizCode === 'voice_clone' || bizCode === 'text_to_speech') {
                     responseData.outputAudioUrl = task.output_image_url;
                     responseData.inputAudioUrl = task.input_image_url;
