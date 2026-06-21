@@ -24,6 +24,7 @@
    - [发起视频去水印](#12-发起视频去水印)
    - [查询当日免费剩余次数](#13-查询当日免费剩余次数)
    - [图床上传](#14-图床上传)
+   - [PDF 转图片](#15-pdf-转图片)
 3. [调用流程说明](#调用流程说明)
 4. [bizCode 业务代码说明](#bizcode-业务代码说明)
 5. [错误码说明](#错误码说明)
@@ -55,6 +56,7 @@
 | 异步多媒体安全识别 | `POST` | `/api/wechat/media_check_async` | 异步检测图片/音频是否违规（支持直接文件上传，结果通过回调推送） |
 | 获取用户安全等级 | `POST` | `/api/wechat/user_risk_rank` | 检测用户账号安全等级与风控等级（同步处理） |
 | 图床上传 | `POST` | `/api/wechat/image_hosting/upload` | 微信验证后上传图片到图床，返回永久可访问链接（同步处理） |
+| PDF 转图片 | `POST` | `/api/wechat/pdf_to_images` | 上传 PDF 文件，将每页转为图片以 base64 返回（同步处理） |
 
 **Base URL**: `https://tools.kkdmx.com`
 
@@ -1768,6 +1770,175 @@ wx.login({
 
 ---
 
+### 15. PDF 转图片
+
+**POST** `/api/wechat/pdf_to_images`
+
+上传 PDF 文件，服务端将 PDF 的每一页渲染为 PNG 图片，以 base64 编码数组返回。接口为同步处理，PDF 页数越多返回时间越长。
+
+> [!NOTE]
+> 此接口使用独立的微信 AppID/AppSecret（`PDF_WECHAT_APPID` / `PDF_WECHAT_SECRET`），与其他接口的微信配置互不影响。
+
+#### 请求头
+
+```
+Content-Type: multipart/form-data
+```
+
+#### 请求参数 (Form Data)
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `code` | string | ✅ | 微信小程序 `wx.login` 返回的临时登录凭证 |
+| `file` | File | ✅ | PDF 文件（仅支持 `application/pdf` 类型） |
+| `scale` | number | ❌ | 渲染精度倍数，范围 1.0~4.0，值越大图片越清晰但体积越大。默认 `2.0` |
+
+#### 文件限制
+
+- 最大文件大小：**20MB**
+- 仅支持 **PDF** 格式（`.pdf` 文件，MIME 类型 `application/pdf`）
+
+#### 请求示例（微信小程序）
+
+```javascript
+// 选择 PDF 文件并上传
+wx.chooseMessageFile({
+  count: 1,
+  type: 'file',
+  extension: ['pdf'],
+  success(res) {
+    const tempFilePath = res.tempFiles[0].path;
+
+    wx.login({
+      success(loginRes) {
+        wx.uploadFile({
+          url: `${BASE_URL}/api/wechat/pdf_to_images`,
+          filePath: tempFilePath,
+          name: 'file',
+          formData: {
+            code: loginRes.code,
+            scale: '2.0',
+          },
+          success(uploadRes) {
+            const data = JSON.parse(uploadRes.data);
+            if (data.success) {
+              console.log(`共 ${data.data.pageCount} 页`);
+              // data.data.images 是 base64 字符串数组
+              data.data.images.forEach((base64, index) => {
+                console.log(`第 ${index + 1} 页图片 base64 长度:`, base64.length);
+              });
+            } else {
+              console.error('转换失败:', data.error);
+            }
+          },
+          fail(err) {
+            console.error('请求失败:', err);
+          }
+        });
+      }
+    });
+  }
+});
+```
+
+#### 请求示例（curl）
+
+```bash
+curl -X POST https://tools.kkdmx.com/api/wechat/pdf_to_images \
+  -F "code=0a3Xyz000abc12def345" \
+  -F "file=@/path/to/document.pdf" \
+  -F "scale=2.0"
+```
+
+#### 响应 - 成功 (200)
+
+```json
+{
+  "success": true,
+  "message": "PDF 转换成功，共 3 页",
+  "data": {
+    "pageCount": 3,
+    "images": [
+      "iVBORw0KGgoAAAANSUhEUgAA...（第1页 base64）",
+      "iVBORw0KGgoAAAANSUhEUgAA...（第2页 base64）",
+      "iVBORw0KGgoAAAANSUhEUgAA...（第3页 base64）"
+    ]
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `pageCount` | number | PDF 总页数 |
+| `images` | string[] | base64 编码的 PNG 图片数组（不含 `data:image/png;base64,` 前缀），数组长度等于 `pageCount` |
+
+> [!TIP]
+> 在小程序中显示 base64 图片时，需要拼接前缀：`data:image/png;base64,` + `images[i]`，然后赋值给 `<image>` 组件的 `src` 属性。
+
+#### 响应 - 参数错误 (400)
+
+```json
+{
+  "success": false,
+  "error": "code 参数必填"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "请上传 PDF 文件（字段名: file）"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "不支持的文件类型: image/jpeg，仅支持 PDF 文件"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "文件大小超过限制（最大 20MB）"
+}
+```
+
+#### 响应 - 微信验证失败 (400)
+
+```json
+{
+  "success": false,
+  "error": "微信验证失败：code 无效或已过期，请重新调用 wx.login",
+  "errcode": 40029
+}
+```
+
+#### 响应 - 服务器错误 (500)
+
+```json
+{
+  "success": false,
+  "error": "PDF 转换失败：具体错误信息"
+}
+```
+
+> [!IMPORTANT]
+> **服务端环境变量配置**：使用此接口需要在服务端配置以下环境变量（与其他微信配置独立）：
+> - `PDF_WECHAT_APPID` — PDF 转图片接口专用的微信小程序 AppID
+> - `PDF_WECHAT_SECRET` — PDF 转图片接口专用的微信小程序 AppSecret
+>
+> 可通过 [微信公众平台](https://mp.weixin.qq.com/) → 开发管理 → 开发设置 获取。
+
+> [!WARNING]
+> **注意事项**：
+> - PDF 文件页数较多时，返回的 JSON 数据量会很大，请注意小程序端的内存使用
+> - 建议 `scale` 参数根据实际需求选择：`1.0` 适合预览，`2.0` 适合一般使用，`3.0`~`4.0` 适合高清打印
+> - 服务器内存有限（512MB），处理大型 PDF 时可能会超时或失败
+
+---
+
 ## 调用流程说明
 
 ```
@@ -2546,3 +2717,5 @@ A: 需要配置以下环境变量：
 - `IMAGE_HOSTING_WECHAT_APPID` — 图床上传接口专用的微信小程序 AppID（与 `WECHAT_APPID` 独立）
 - `IMAGE_HOSTING_WECHAT_SECRET` — 图床上传接口专用的微信小程序 AppSecret（与 `WECHAT_SECRET` 独立）
 - `HELLOIMG_API_TOKEN` — HelloImg 图床 API Token
+- `PDF_WECHAT_APPID` — PDF 转图片接口专用的微信小程序 AppID（与 `WECHAT_APPID` 独立）
+- `PDF_WECHAT_SECRET` — PDF 转图片接口专用的微信小程序 AppSecret（与 `WECHAT_SECRET` 独立）

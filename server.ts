@@ -2698,6 +2698,178 @@ app.post('/api/wechat/image_hosting/upload', upload.single('file'), async (req, 
         });
     }
 });
+// ============================================================
+// PDF Service: WeChat code → openid (独立 AppID/AppSecret)
+// ============================================================
+/**
+ * Helper to exchange WeChat code for openid using PDF-service-specific credentials.
+ * Uses PDF_WECHAT_APPID and PDF_WECHAT_SECRET environment variables.
+ */
+async function getOpenIdForPdfService(code: string): Promise<{ openid: string; unionid?: string }> {
+    const appId = process.env.PDF_WECHAT_APPID;
+    const appSecret = process.env.PDF_WECHAT_SECRET;
+
+    if (!appId || !appSecret) {
+        console.error('[PdfService] PDF_WECHAT_APPID or PDF_WECHAT_SECRET not configured');
+        throw new Error('服务端 PDF 服务微信配置缺失，请联系管理员');
+    }
+
+    console.log('[PdfService] Exchanging code for openid...');
+
+    const wxRes = await axios.get('https://api.weixin.qq.com/sns/jscode2session', {
+        params: {
+            appid: appId,
+            secret: appSecret,
+            js_code: code,
+            grant_type: 'authorization_code',
+        },
+        timeout: 10000,
+    });
+
+    const wxData = wxRes.data;
+    console.log('[PdfService] WeChat response:', JSON.stringify({
+        openid: wxData.openid ? '***' : undefined,
+        errcode: wxData.errcode,
+        errmsg: wxData.errmsg,
+    }));
+
+    if (wxData.errcode && wxData.errcode !== 0) {
+        const errorMessages: Record<number, string> = {
+            40029: 'code 无效或已过期，请重新调用 wx.login',
+            45011: '请求频率限制，请稍后再试',
+            40226: '高风险等级用户，小程序登录拦截',
+            [-1]: '微信系统繁忙，请稍后再试',
+        };
+        const msg = errorMessages[wxData.errcode] || wxData.errmsg || '微信登录失败';
+        const err = new Error(msg) as any;
+        err.errcode = wxData.errcode;
+        throw err;
+    }
+
+    if (!wxData.openid) {
+        throw new Error('微信登录异常：未返回 openid');
+    }
+
+    return {
+        openid: wxData.openid,
+        unionid: wxData.unionid,
+    };
+}
+
+// Multer configuration for PDF uploads only
+const pdfUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 20 * 1024 * 1024, // 20MB max
+    },
+    fileFilter: (_req, file, cb) => {
+        if (file.mimetype === 'application/pdf') {
+            cb(null, true);
+        } else {
+            cb(new Error(`不支持的文件类型: ${file.mimetype}，仅支持 PDF 文件`));
+        }
+    },
+});
+
+// ============================================================
+// API: POST /api/wechat/pdf_to_images — PDF 转图片（base64）
+// ============================================================
+app.post('/api/wechat/pdf_to_images', (req, res, next) => {
+    pdfUpload.single('file')(req, res, (err) => {
+        if (err) {
+            if (err instanceof multer.MulterError) {
+                if (err.code === 'LIMIT_FILE_SIZE') {
+                    return res.status(400).json({ success: false, error: '文件大小超过限制（最大 20MB）' });
+                }
+                return res.status(400).json({ success: false, error: `上传错误：${err.message}` });
+            }
+            return res.status(400).json({ success: false, error: err.message });
+        }
+        next();
+    });
+}, async (req, res) => {
+    try {
+        // 1. Validate code parameter
+        const code = req.body?.code;
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ success: false, error: 'code 参数必填' });
+        }
+
+        // 2. Validate file
+        const file = req.file;
+        if (!file) {
+            return res.status(400).json({ success: false, error: '请上传 PDF 文件（字段名: file）' });
+        }
+
+        // Double-check file type by extension and mimetype
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (ext !== '.pdf' && file.mimetype !== 'application/pdf') {
+            return res.status(400).json({ success: false, error: '仅支持 PDF 文件格式' });
+        }
+
+        // 3. Exchange code for openid (using PDF-service-specific credentials)
+        let openid: string;
+        try {
+            const wxData = await getOpenIdForPdfService(code);
+            openid = wxData.openid;
+        } catch (err: any) {
+            return res.status(400).json({
+                success: false,
+                error: `微信验证失败：${err.message}`,
+                errcode: err.errcode,
+            });
+        }
+
+        console.log(`[PdfToImages] openid=${openid}, fileName=${file.originalname}, fileSize=${file.size}`);
+
+        // 4. Parse optional scale parameter (default 2.0, range 1.0 ~ 4.0)
+        let scale = 2.0;
+        if (req.body?.scale !== undefined) {
+            const parsedScale = parseFloat(req.body.scale);
+            if (!isNaN(parsedScale) && parsedScale >= 1.0 && parsedScale <= 4.0) {
+                scale = parsedScale;
+            }
+        }
+
+        // 5. Convert PDF to images using pdf-to-img
+        const { pdf } = await import('pdf-to-img');
+
+        // Convert Buffer to data URL for pdf-to-img
+        const pdfDataUrl = `data:application/pdf;base64,${file.buffer.toString('base64')}`;
+        const document = await pdf(pdfDataUrl, { scale });
+
+        const images: string[] = [];
+        let pageIndex = 0;
+        for await (const image of document) {
+            pageIndex++;
+            // image is a Buffer (PNG)
+            const base64 = image.toString('base64');
+            images.push(base64);
+            console.log(`[PdfToImages] Rendered page ${pageIndex}, size=${image.length} bytes`);
+        }
+
+        if (images.length === 0) {
+            return res.status(400).json({ success: false, error: 'PDF 文件为空或无法解析' });
+        }
+
+        console.log(`[PdfToImages] Completed: ${images.length} page(s) rendered for openid=${openid}`);
+
+        res.json({
+            success: true,
+            message: `PDF 转换成功，共 ${images.length} 页`,
+            data: {
+                pageCount: images.length,
+                images, // base64 encoded PNG strings (without data:image/png;base64, prefix)
+            },
+        });
+    } catch (error: any) {
+        console.error('[PdfToImages] Unhandled error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: 'PDF 转换失败：' + (error.message || '未知错误'),
+        });
+    }
+});
 
 // ============================================================
 // Serve frontend
