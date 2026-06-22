@@ -1,3 +1,8 @@
+# fly.toml app configuration file generated for douyin-down on 2026-05-31T14:28:03Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
 app = 'douyin-down'
 primary_region = 'hkg'
 
